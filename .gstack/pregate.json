@@ -90,7 +90,11 @@
     "infra/lib/index.ts": [],
     "e2e/package.json": [],
     "e2e/tsconfig.json": [],
-    "e2e/tests/index.ts": []
+    "e2e/tests/index.ts": [],
+    ".claude/hooks/lib/cdk-gate.mjs": [
+      "tools/scripts/test/block-cdk-deploy.spec.ts",
+      "tools/scripts/test/on-ts-edit.spec.ts"
+    ]
   },
   "guards": [
     {

@@ -41,10 +41,12 @@ describe('Claude Code project settings — the permission lists', () => {
   it('denies the common spellings of every account-changing CDK command without depending on node', () => {
     expect(settings.permissions.deny).toEqual(
       expect.arrayContaining(
-        ['deploy', 'watch', 'import', 'bootstrap', 'destroy', 'rollback'].flatMap((sub) => [
-          `Bash(cdk ${sub}*)`,
-          `Bash(npx cdk ${sub}*)`,
-        ]),
+        ['deploy', 'watch', 'import', 'bootstrap', 'destroy', 'rollback', 'gc', 'refactor'].flatMap(
+          (sub) =>
+            ['cdk', 'npx cdk', 'npx aws-cdk', 'pnpm exec cdk', 'pnpm dlx cdk'].map(
+              (cli) => `Bash(${cli} ${sub}*)`,
+            ),
+        ),
       ),
     );
   });
@@ -60,7 +62,17 @@ describe('Claude Code project settings — the permission lists', () => {
         'Bash(git diff*--ext-diff*)',
         'Bash(git log*--ext-diff*)',
         'Bash(cdk*--app*)',
+        'Bash(cdk*-a *)',
+        'Bash(pnpm -F @fisio/infra*--app*)',
+        'Bash(pnpm test:cloud*)',
       ]),
+    );
+  });
+
+  it('pre-approves the local suite but not the cloud contract tests (real Cognito and SES)', () => {
+    expect(settings.permissions.allow).toContain('Bash(pnpm test)');
+    expect(settings.permissions.allow.filter((rule) => rule.startsWith('Bash(pnpm test*'))).toEqual(
+      [],
     );
   });
 

@@ -52,11 +52,14 @@ docs/           architecture, implementation plan, generated specs/journeys/open
 ## Rules
 
 - **Never run `cdk deploy` directly** (a hook blocks it, and `watch`/`import`/`bootstrap`/
-  `destroy`/`rollback` too). Only `pnpm deploy:dev`, which runs the full local suite first. `prod`
-  is deployed only by the pipeline with manual approval; the one-time `cdk bootstrap` is yours.
-- The deploy hook fails closed and denies by default: a mention of those commands outside a
-  commit/PR message, a grep pattern or a heredoc fed to `cat`/`git`/`gh` is blocked too. If
-  **every** Bash call is blocked, `node` is not on the hook's PATH: restart Claude Code from a
+  `destroy`/`rollback`/`gc`/`refactor` too). Only `pnpm deploy:dev`, which runs the full local
+  suite first. `prod` is deployed only by the pipeline with manual approval; the one-time
+  `cdk bootstrap` is yours.
+- The deploy hook has **no exemptions**: any Bash command whose text names one of those commands
+  is denied, even in a commit message, grep pattern or heredoc. Put such text in a file written
+  with Write/Edit and pass the file: `git commit -F <file>`, `gh pr create --body-file <file>`.
+- The deploy hook fails closed. If **every** Bash call is blocked, `node` is not on the hook's
+  PATH: restart Claude Code from a
   shell where `node -v` prints 24.x. Last resort: `"disableAllHooks": true` in
   `.claude/settings.local.json` (turns off both hooks; the permission deny list still applies) —
   remove it once node is found.

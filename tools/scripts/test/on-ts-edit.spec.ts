@@ -1,4 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -48,6 +56,14 @@ beforeAll(() => {
   mkdirSync(join(sibling, 'src'), { recursive: true });
   writeFileSync(join(sibling, 'package.json'), failing);
   writeFileSync(join(sibling, 'src', 'index.ts'), 'export {};\n');
+  // A manifest without a typecheck script inside `bad`: the hook must walk past it.
+  mkdirSync(join(root, 'bad', 'nested'), { recursive: true });
+  writeFileSync(join(root, 'bad', 'nested', 'package.json'), '{"name":"nested","private":true}');
+  writeFileSync(join(root, 'bad', 'nested', 'x.ts'), 'export {};\n');
+  // A package whose typecheck script would deploy: the hook must refuse to run it.
+  pkg('deployer', 'npx cdk deploy --all');
+  // A symlink inside the project that points at the failing package outside it.
+  symlinkSync(join(outside, 'src', 'index.ts'), join(root, 'good', 'src', 'linked.ts'));
 });
 
 afterAll(() => {
@@ -107,6 +123,25 @@ describe('Edit hook — typecheck the owning package after each .ts/.tsx edit', 
     expect(run.stdout).toBe('');
   });
 
+  // Value: protects=a sub-folder manifest without a typecheck does not hide the real package; fails_when=owningPackage returns the first manifest it finds; why_new=gap [25]; seam=none; no_claim=nested workspaces
+  it('walks past a manifest without a typecheck script to the owning package', () => {
+    const run = edit('bad/nested/x.ts');
+    expect(JSON.parse(run.stdout).hookSpecificOutput.additionalContext).toContain('typecheck bad');
+  });
+
+  // Value: protects=a package script cannot deploy behind the gate; fails_when=the script check is removed; why_new=review round 4 finding; seam=none; no_claim=scripts that hide the command indirectly
+  it('refuses a typecheck script that would run a CDK command that changes an account', () => {
+    const run = edit('deployer/src/index.ts');
+    expect(JSON.parse(run.stdout).hookSpecificOutput.additionalContext).toContain('refused');
+  });
+
+  // Value: protects=a symlink cannot point the hook outside the project; fails_when=the root check compares unresolved paths; why_new=review round 4 finding; seam=none; no_claim=hard links
+  it('ignores a symlink that points outside the project', () => {
+    const run = edit('good/src/linked.ts');
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe('');
+  });
+
   it('ignores hook input that is not valid JSON', () => {
     const run = runNode(HOOK, { cwd: root, stdin: 'not json' });
     expect(run.status).toBe(0);
@@ -158,6 +193,8 @@ describe('Edit hook — Biome and the root tsconfig, with binaries installed', (
     };
     pkg('good', 'exit 0');
     pkg('bad', 'echo "src/index.ts(1,1): error TS2322: Type mismatch"; exit 2');
+    // Calls `tsc` by name: only the root node_modules/.bin stub provides it.
+    pkg('pathcheck', 'tsc --noEmit -p tsconfig.json');
   });
 
   afterAll(() => {
@@ -183,6 +220,14 @@ describe('Edit hook — Biome and the root tsconfig, with binaries installed', (
     expect(context).toContain('… (20 more lines)');
     expect(context).toContain('typecheck bad');
     expect(context).toContain('TS2322');
+  });
+
+  // Value: protects=package scripts find hoisted binaries without pnpm; fails_when=the root node_modules/.bin PATH prepend is lost (every real typecheck fails with tsc: not found); why_new=gap [28]; seam=none; no_claim=pnpm PATH rules
+  it('runs a package script with the root node_modules/.bin on PATH', () => {
+    const run = editIn('pathcheck/src/index.ts');
+    const context: string = JSON.parse(run.stdout).hookSpecificOutput.additionalContext;
+    expect(context).toContain('typecheck pathcheck');
+    expect(context).toContain('TS2322: boom');
   });
 
   it('stays silent when Biome and the package typecheck both pass', () => {

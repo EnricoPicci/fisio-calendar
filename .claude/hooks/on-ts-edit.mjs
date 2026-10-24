@@ -7,12 +7,17 @@
 //      unchecked rather than passed silently.
 // Silent when everything passes. Remaining Biome diagnostics, type errors and timeouts are
 // returned to Claude as additional context, so they surface immediately instead of in a later
-// test run. All steps share one deadline inside the hook's 90 s budget (.claude/settings.json),
-// so a slow step is reported as timed out instead of the whole hook being killed silently.
+// test run. All steps share one deadline inside the hook's 90 s budget (.claude/settings.json);
+// each runs in its own process group, killed as a whole at the deadline, so a chained script
+// cannot leave a tsc running or hold the hook open.
+// The typecheck script runs without a Bash call, so it never passes the deploy gate: a script
+// that names an account-changing CDK command (rule in ./lib/cdk-gate.mjs) is refused instead.
+// Paths are compared as real paths, so a symlink cannot point the hook outside the project.
 // See docs/tooling-and-skills.md §2.3.
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { runsMutatingCdk } from './lib/cdk-gate.mjs';
 
 const MAX_LINES = 60;
 const BUDGET_MS = 80_000;
@@ -22,9 +27,11 @@ const input = readStdinJson();
 const filePath = input?.tool_input?.file_path;
 if (typeof filePath !== 'string' || !/\.(?:ts|tsx|mts|cts)$/.test(filePath)) process.exit(0);
 
-const root = resolve(process.env.CLAUDE_PROJECT_DIR ?? process.cwd());
-const file = resolve(root, filePath);
-if (!isInsideRoot(file) || !existsSync(file)) process.exit(0);
+const root = realpath(resolve(process.env.CLAUDE_PROJECT_DIR ?? process.cwd()));
+const requested = resolve(root, filePath);
+if (!existsSync(requested)) process.exit(0);
+const file = realpath(requested);
+if (!isInsideRoot(file)) process.exit(0);
 const rel = relative(root, file);
 if (rel.split(sep).includes('node_modules')) process.exit(0);
 
@@ -33,7 +40,7 @@ const problems = [];
 // 1. Biome on the edited file.
 const biome = join(root, 'node_modules', '.bin', 'biome');
 if (existsSync(biome)) {
-  report(`biome check ${rel}`, run(biome, ['check', '--write', file], { cwd: root }));
+  report(`biome check ${rel}`, await run(biome, ['check', '--write', file], { cwd: root }));
 }
 
 // 2. Typecheck the owning package (nearest package.json with a `typecheck` script).
@@ -41,25 +48,24 @@ const pkgDir = owningPackage(dirname(file));
 if (pkgDir === root) {
   const tsc = join(root, 'node_modules', '.bin', 'tsc');
   if (existsSync(tsc) && existsSync(join(root, 'tsconfig.json'))) {
-    const listed = run(tsc, ['-p', 'tsconfig.json', '--listFilesOnly'], { cwd: root });
-    const real = realpath(file);
+    const listed = await run(tsc, ['-p', 'tsconfig.json', '--listFilesOnly'], { cwd: root });
     if (timedOut(listed)) {
       report('tsc (root) --listFilesOnly', listed);
     } else if (
       listed.status === 0 &&
       !listed.stdout
         .split('\n')
-        .some((line) => line.trim() && realpath(resolve(root, line.trim())) === real)
+        .some((line) => line.trim() && realpath(resolve(root, line.trim())) === file)
     ) {
       problems.push(
         `typecheck: ${rel} is not checked by any typecheck — it is outside every workspace package and not included by the root tsconfig.json. Move it into a package or add it to a tsconfig.`,
       );
     } else {
-      report('tsc (root)', run(tsc, ['--noEmit', '-p', 'tsconfig.json'], { cwd: root }));
+      report('tsc (root)', await run(tsc, ['--noEmit', '-p', 'tsconfig.json'], { cwd: root }));
     }
   }
 } else if (pkgDir) {
-  report(`typecheck ${relative(root, pkgDir)}`, runPackageScript(pkgDir, 'typecheck'));
+  report(`typecheck ${relative(root, pkgDir)}`, await runPackageScript(pkgDir, 'typecheck'));
 }
 
 if (problems.length > 0) {
@@ -108,8 +114,17 @@ function runPackageScript(pkgDir, name) {
   // the workspace root's node_modules/.bin prepended to PATH. Deliberately pnpm-free: the hook
   // must work before `corepack enable` has put pnpm on PATH.
   const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+  const script = pkg.scripts[name];
+  if (runsMutatingCdk(script)) {
+    return {
+      status: 1,
+      stdout: '',
+      stderr:
+        'refused: this typecheck script names a CDK command that changes an AWS account, and scripts run by this hook bypass the deploy gate.',
+    };
+  }
   const bins = [join(pkgDir, 'node_modules', '.bin'), join(root, 'node_modules', '.bin')];
-  return run('sh', ['-c', pkg.scripts[name]], {
+  return run('sh', ['-c', script], {
     cwd: pkgDir,
     env: { ...process.env, PATH: `${bins.join(':')}:${process.env.PATH ?? ''}` },
   });
@@ -117,18 +132,50 @@ function runPackageScript(pkgDir, name) {
 
 function run(command, args, options) {
   const remaining = deadline - Date.now();
-  if (remaining <= 0)
-    return { status: null, signal: 'SIGKILL', stdout: '', stderr: '', skipped: true };
-  return spawnSync(command, args, {
-    ...options,
-    encoding: 'utf8',
-    timeout: remaining,
-    killSignal: 'SIGKILL',
+  if (remaining <= 0) {
+    return Promise.resolve({
+      status: null,
+      signal: 'SIGKILL',
+      stdout: '',
+      stderr: '',
+      skipped: true,
+    });
+  }
+  return new Promise((done) => {
+    const child = spawn(command, args, {
+      ...options,
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk) => {
+      stderr += chunk;
+    });
+    // At the deadline, kill the whole process group, so a chained script's children die too.
+    const timer = setTimeout(() => {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }, remaining);
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      done({ status: null, signal: null, stdout, stderr: `${stderr}${error.message}` });
+    });
+    child.on('close', (status, signal) => {
+      clearTimeout(timer);
+      done({ status, signal, stdout, stderr });
+    });
   });
 }
 
 function timedOut(result) {
-  return result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL';
+  return result.signal === 'SIGKILL';
 }
 
 function realpath(path) {

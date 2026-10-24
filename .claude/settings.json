@@ -3,7 +3,9 @@
   "permissions": {
     "allow": [
       "Bash(pnpm install)",
-      "Bash(pnpm test*)",
+      "Bash(pnpm test)",
+      "Bash(pnpm test -- *)",
+      "Bash(pnpm test:watch*)",
       "Bash(pnpm typecheck*)",
       "Bash(pnpm lint*)",
       "Bash(pnpm -r build*)",
@@ -26,6 +28,7 @@
     ],
     "ask": [
       "Bash(pnpm deploy:*)",
+      "Bash(pnpm test:cloud*)",
       "Bash(git push*)",
       "Bash(rm -rf*)",
       "Bash(git diff*--output*)",
@@ -66,7 +69,17 @@
       "Bash(pnpm dlx cdk import*)",
       "Bash(pnpm dlx cdk bootstrap*)",
       "Bash(pnpm dlx cdk destroy*)",
-      "Bash(pnpm dlx cdk rollback*)"
+      "Bash(pnpm dlx cdk rollback*)",
+      "Bash(cdk gc*)",
+      "Bash(cdk refactor*)",
+      "Bash(npx cdk gc*)",
+      "Bash(npx cdk refactor*)",
+      "Bash(npx aws-cdk gc*)",
+      "Bash(npx aws-cdk refactor*)",
+      "Bash(pnpm exec cdk gc*)",
+      "Bash(pnpm exec cdk refactor*)",
+      "Bash(pnpm dlx cdk gc*)",
+      "Bash(pnpm dlx cdk refactor*)"
     ]
   },
   "hooks": {
