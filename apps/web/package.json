@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "React SPA: templates without logic (src/pages), view-models with RxJS (src/viewmodels), services, headless UI journeys (test/journeys).",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json"
+  }
+}

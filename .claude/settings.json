@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install)",
+      "Bash(pnpm test)",
+      "Bash(pnpm test -- *)",
+      "Bash(pnpm test:watch*)",
+      "Bash(pnpm typecheck*)",
+      "Bash(pnpm lint*)",
+      "Bash(pnpm -r build*)",
+      "Bash(pnpm local:up*)",
+      "Bash(pnpm local:down*)",
+      "Bash(pnpm tick*)",
+      "Bash(docker compose up -d*)",
+      "Bash(docker compose ps*)",
+      "Bash(cdk synth*)",
+      "Bash(cdk diff*)",
+      "Bash(pnpm -F @fisio/infra synth*)",
+      "Bash(pnpm -F @fisio/infra diff*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch -a)",
+      "Bash(git branch -vv)"
+    ],
+    "ask": [
+      "Bash(pnpm deploy:*)",
+      "Bash(pnpm test:cloud*)",
+      "Bash(git push*)",
+      "Bash(rm -rf*)",
+      "Bash(git diff*--output*)",
+      "Bash(git log*--output*)",
+      "Bash(git diff*--ext-diff*)",
+      "Bash(git log*--ext-diff*)",
+      "Bash(cdk*--app*)",
+      "Bash(cdk*-a *)",
+      "Bash(pnpm -F @fisio/infra*--app*)"
+    ],
+    "deny": [
+      "Bash(cdk deploy*)",
+      "Bash(cdk watch*)",
+      "Bash(cdk import*)",
+      "Bash(cdk bootstrap*)",
+      "Bash(cdk destroy*)",
+      "Bash(cdk rollback*)",
+      "Bash(npx cdk deploy*)",
+      "Bash(npx cdk watch*)",
+      "Bash(npx cdk import*)",
+      "Bash(npx cdk bootstrap*)",
+      "Bash(npx cdk destroy*)",
+      "Bash(npx cdk rollback*)",
+      "Bash(npx aws-cdk deploy*)",
+      "Bash(npx aws-cdk watch*)",
+      "Bash(npx aws-cdk import*)",
+      "Bash(npx aws-cdk bootstrap*)",
+      "Bash(npx aws-cdk destroy*)",
+      "Bash(npx aws-cdk rollback*)",
+      "Bash(pnpm exec cdk deploy*)",
+      "Bash(pnpm exec cdk watch*)",
+      "Bash(pnpm exec cdk import*)",
+      "Bash(pnpm exec cdk bootstrap*)",
+      "Bash(pnpm exec cdk destroy*)",
+      "Bash(pnpm exec cdk rollback*)",
+      "Bash(pnpm dlx cdk deploy*)",
+      "Bash(pnpm dlx cdk watch*)",
+      "Bash(pnpm dlx cdk import*)",
+      "Bash(pnpm dlx cdk bootstrap*)",
+      "Bash(pnpm dlx cdk destroy*)",
+      "Bash(pnpm dlx cdk rollback*)",
+      "Bash(cdk gc*)",
+      "Bash(cdk refactor*)",
+      "Bash(npx cdk gc*)",
+      "Bash(npx cdk refactor*)",
+      "Bash(npx aws-cdk gc*)",
+      "Bash(npx aws-cdk refactor*)",
+      "Bash(pnpm exec cdk gc*)",
+      "Bash(pnpm exec cdk refactor*)",
+      "Bash(pnpm dlx cdk gc*)",
+      "Bash(pnpm dlx cdk refactor*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/on-ts-edit.mjs",
+            "timeout": 90,
+            "statusMessage": "Biome + typecheck"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-cdk-deploy.mjs",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

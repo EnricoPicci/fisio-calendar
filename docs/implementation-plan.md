@@ -27,7 +27,7 @@ Effort is given as **CC sessions** (one focused Claude Code session ≈ 1–3 ho
 
 | # | Item | Needed by | Owner |
 |---|---|---|---|
-| P1 | Node 22 LTS, pnpm 9, Docker Desktop, Git, an authenticator app (TOTP) on the developer's phone | WP0.1 | developer |
+| P1 | Node 24 LTS (`.nvmrc`), pnpm 12 (`corepack enable`; the version is pinned in `package.json`), Docker Desktop, Git, GitHub CLI (`gh`, for `/ship`), an authenticator app (TOTP) on the developer's phone | WP0.1 | developer |
 | P2 | GitHub repository with Actions enabled; branch protection on `main` (require the `test` job) | WP0.1 | developer |
 | P3 | AWS account on the **Paid plan** (always-free allowances apply; the Free plan auto-closes after 6 months), region `eu-central-1`, IAM Identity Center or an admin user with MFA for the CDK bootstrap | WP0.10 | developer |
 | P4 | Domain name; DNS delegated to Route 53 at WP0.10 (the hosted zone is created by the `Edge` stack) | WP0.10 | developer |

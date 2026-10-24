@@ -1,0 +1,33 @@
+{
+  "name": "fisio-calendar",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.15.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:cloud:auth": "node tools/scripts/not-yet.mjs test:cloud:auth WP0.10",
+    "test:cloud:email": "node tools/scripts/not-yet.mjs test:cloud:email WP0.10",
+    "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --parallel --aggregate-output typecheck",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "local:up": "node tools/scripts/not-yet.mjs local:up WP0.3",
+    "local:down": "node tools/scripts/not-yet.mjs local:down WP0.3",
+    "dev": "node tools/scripts/not-yet.mjs dev WP0.4",
+    "tick": "node tools/scripts/not-yet.mjs tick WP0.6",
+    "seed": "node tools/scripts/not-yet.mjs seed WP0.5",
+    "bootstrap:therapist": "node tools/scripts/not-yet.mjs bootstrap:therapist WP0.5",
+    "deploy:dev": "pnpm test && node tools/scripts/not-yet.mjs deploy:dev WP0.10",
+    "smoke:dev": "node tools/scripts/not-yet.mjs smoke:dev WP0.10"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.2",
+    "@types/node": "^24.19.2",
+    "typescript": "~7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

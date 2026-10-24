@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/local",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local stack: docker-compose (DynamoDB Local, Mailpit), auth emulator, tick runner, seed.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

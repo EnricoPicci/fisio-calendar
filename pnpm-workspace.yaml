@@ -1,0 +1,8 @@
+packages:
+  - apps/*
+  - packages/*
+  - infra
+  - tools/local
+  - tools/bootstrap
+  - e2e
+  - tools/scripts

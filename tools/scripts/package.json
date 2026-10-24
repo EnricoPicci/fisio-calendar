@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/tooling",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Repository tooling: placeholder scripts and the specs for the Claude Code hooks in .claude/hooks.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# build and tool output
+dist/
+cdk.out/
+coverage/
+.vitest/
+*.tsbuildinfo
+test-results/
+playwright-report/
+*.log
+
+# local configuration and secrets
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+
+# OS
+.DS_Store
+
+# gstack /ship scratch (the committed config is .gstack/pregate.json)
+.gstack/tmp/
+.gstack/qa-reports/

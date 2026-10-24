@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Zod schemas and DTO types shared by web and api; the ErrorCode catalogue; the typed Italian strings module.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

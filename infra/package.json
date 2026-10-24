@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/infra",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AWS CDK app: Stateful, App and Edge stacks, infra assertions, bundle smoke.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}
