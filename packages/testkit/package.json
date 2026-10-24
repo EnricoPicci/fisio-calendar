@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/testkit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared test tooling: in-process fetch adapter, recorders, JourneyHarness, FaultInjectingDynamo, fake JWTs, journey report renderer.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

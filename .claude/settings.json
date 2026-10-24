@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install)",
+      "Bash(pnpm test*)",
+      "Bash(pnpm typecheck*)",
+      "Bash(pnpm lint*)",
+      "Bash(pnpm -r build*)",
+      "Bash(pnpm -F * build*)",
+      "Bash(pnpm --filter * build*)",
+      "Bash(pnpm local:up*)",
+      "Bash(pnpm local:down*)",
+      "Bash(pnpm tick*)",
+      "Bash(docker compose up -d*)",
+      "Bash(docker compose ps*)",
+      "Bash(cdk synth*)",
+      "Bash(cdk diff*)",
+      "Bash(pnpm -F @fisio/infra synth*)",
+      "Bash(pnpm -F @fisio/infra diff*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)"
+    ],
+    "ask": ["Bash(cdk deploy*)", "Bash(pnpm deploy:*)", "Bash(git push*)", "Bash(rm -rf*)"]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/on-ts-edit.mjs",
+            "timeout": 90,
+            "statusMessage": "Biome + typecheck"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-cdk-deploy.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

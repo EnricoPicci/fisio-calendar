@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/bootstrap",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "bootstrap:therapist CLI over the IdentityProvider port (local, dev, prod).",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

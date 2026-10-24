@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Playwright binding journeys against the full local stack.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

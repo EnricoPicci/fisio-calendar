@@ -1,0 +1,44 @@
+# CI (docs/architecture.md §11.3). The `test` job runs exactly what a laptop runs: `pnpm test`,
+# the complete local suite, against the same Docker containers (DynamoDB Local, Mailpit).
+# `deploy-dev` / `smoke-dev` (needs: test) and `deploy-prod` arrive with WP0.10.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4 # version from package.json "packageManager"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+
+      - run: pnpm typecheck
+
+      - name: Start local containers (DynamoDB Local, Mailpit)
+        # The compose file lands with WP0.3; until then the suite needs no containers.
+        if: hashFiles('tools/local/docker-compose.yml') != ''
+        run: pnpm local:up
+
+      - run: pnpm test

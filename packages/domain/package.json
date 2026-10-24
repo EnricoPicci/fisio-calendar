@@ -1,0 +1,10 @@
+{
+  "name": "@fisio/domain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure TypeScript, no I/O and no AWS: SlotId, rules and slot generation, booking policy, notification state machine, time helpers.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

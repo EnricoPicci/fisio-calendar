@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: npm # pnpm workspaces (pnpm-lock.yaml)
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Rome
+    open-pull-requests-limit: 5
+    groups:
+      aws:
+        patterns: ["aws-cdk*", "@aws-sdk/*", "@aws-lambda-powertools/*", "aws-*"]
+      tooling:
+        dependency-type: development
+      runtime:
+        dependency-type: production
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Rome
