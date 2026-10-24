@@ -8,6 +8,10 @@ updates:
       time: "07:00"
       timezone: Europe/Rome
     open-pull-requests-limit: 5
+    ignore:
+      # Types must match the Node 22 Lambda runtime (architecture §4.3), not the newest Node.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       aws:
         patterns: ["aws-cdk*", "@aws-sdk/*", "@aws-lambda-powertools/*", "aws-*"]
