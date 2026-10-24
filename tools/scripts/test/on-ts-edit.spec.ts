@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -136,7 +136,9 @@ describe('Edit hook — Biome and the root tsconfig, with binaries installed', (
       'tsc',
       [
         'for a in "$@"; do',
-        `  if [ "$a" = "--listFilesOnly" ]; then echo '${join(tooled, 'vitest.config.ts')}'; exit 0; fi`,
+        // Like real tsc, the stub lists the resolved path (on macOS the temp dir is under the
+        // /var -> /private/var symlink), so the hook must compare real paths to recognise it.
+        `  if [ "$a" = "--listFilesOnly" ]; then echo '${join(realpathSync(tooled), 'vitest.config.ts')}'; exit 0; fi`,
         'done',
         "echo 'vitest.config.ts(1,1): error TS2322: boom'",
         'exit 2',

@@ -54,9 +54,12 @@ docs/           architecture, implementation plan, generated specs/journeys/open
 - **Never run `cdk deploy` directly** (a hook blocks it, and `watch`/`import`/`bootstrap`/
   `destroy`/`rollback` too). Only `pnpm deploy:dev`, which runs the full local suite first. `prod`
   is deployed only by the pipeline with manual approval; the one-time `cdk bootstrap` is yours.
-- The deploy hook fails closed. If **every** Bash call is blocked by it, `node` is not on the hook's
-  PATH: start Claude Code from a shell where `node -v` prints 24.x, or add a temporary override in
-  `.claude/settings.local.json`.
+- The deploy hook fails closed and denies by default: a mention of those commands outside a
+  commit/PR message, a grep pattern or a heredoc fed to `cat`/`git`/`gh` is blocked too. If
+  **every** Bash call is blocked, `node` is not on the hook's PATH: restart Claude Code from a
+  shell where `node -v` prints 24.x. Last resort: `"disableAllHooks": true` in
+  `.claude/settings.local.json` (turns off both hooks; the permission deny list still applies) —
+  remove it once node is found.
 - Ask before changing `infra/` or adding a dependency.
 - WhatsApp is a later option: no WhatsApp code in v1, only the `NotificationChannel` seam.
 - Never widen a work package: out-of-scope findings go to `TODOS.md` or a new WP line, same PR.

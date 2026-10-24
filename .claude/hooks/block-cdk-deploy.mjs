@@ -6,19 +6,27 @@
 // runs `pnpm test` first) and the CI pipeline (`prod`, with manual approval). The one-time
 // `cdk bootstrap` (WP0.10) is run by the developer, not by Claude. See docs/architecture.md §11.4.
 //
-// Fails closed: input that cannot be parsed, and any error inside this hook, deny the command;
-// .claude/settings.json also sets `onFailure: "block"`, so a crash or timeout blocks it too, and
-// lists the common spellings under `permissions.deny` as a node-free second layer.
-// The command line is read the way a shell reads it: quotes group words (a quoted commit message
-// or grep pattern is one word, not a command), separators and redirections outside quotes split
-// commands and words, and the text given to `sh -c`, `bash -c` or `eval` is checked as a command.
+// Deny by default. The whole command line, with quotes and escapes removed, is scanned: if any
+// command segment names the CDK CLI followed by an account-changing subcommand, the call is
+// denied — however it is wrapped (`bash -lc '…'`, `"$(…)"`, `npx -c`, `node -e`, heredocs fed to a
+// shell, redirections, odd quoting or case). Only text that is provably data is exempt first:
+//   - a fully quoted argument of a message flag (`git commit -m '…'`, `gh pr create --body "…"`,
+//     `--title`, `--message`) or of a grep/rg search, unless it is double-quoted and contains a
+//     command substitution;
+//   - the body of a heredoc fed to `cat`, `tee`, `git`, `gh` or `glab`, unless that line pipes on.
+// False positives (a mention outside those exemptions) are the accepted cost of failing closed.
+//
+// Fails closed: unparseable input or any error inside this hook denies; .claude/settings.json
+// also sets `onFailure: "block"` and lists the common spellings under `permissions.deny`.
 // A guard against accidents, not an adversary: variable indirection (`X=deploy; cdk $X`) and
 // package scripts that wrap the CLI are out of reach of a text check; IAM is the real boundary.
 import { readFileSync } from 'node:fs';
 
 const MUTATING = new Set(['deploy', 'watch', 'import', 'bootstrap', 'destroy', 'rollback']);
 const CDK_CLI = /(?:^|\/)(?:aws-)?cdk(?:@\S*)?$/;
-const SHELLS = /(?:^|\/)(?:sh|bash|zsh|dash|ksh)$/;
+const MESSAGE_FLAGS = new Set(['-m', '--message', '--body', '--title', '-t']);
+const SEARCH_COMMANDS = new Set(['grep', 'egrep', 'fgrep', 'rg']);
+const HEREDOC_SINKS = new Set(['cat', 'tee', 'git', 'gh', 'glab']);
 const REASON =
   'Direct CDK commands that change an AWS account (deploy, watch, import, bootstrap, destroy, rollback) are blocked. Use `pnpm deploy:dev`, which runs the full local suite first and stops when anything is red; `prod` deploys only through the pipeline; the one-time bootstrap is run by the developer (docs/architecture.md §11.4).';
 
@@ -31,100 +39,176 @@ try {
       'Hook input could not be parsed, so the command was blocked (the deploy gate fails closed).',
     );
   }
-  if (typeof command === 'string' && runsMutatingCdk(command, 0)) deny(REASON);
+  if (typeof command === 'string' && runsMutatingCdk(command)) deny(REASON);
 } catch (error) {
   deny(`The deploy gate failed (${error?.message ?? error}), so the command was blocked.`);
 }
 
-/** True when any simple command in `text` is the CDK CLI followed by a mutating subcommand. */
-function runsMutatingCdk(text, depth) {
-  if (depth > 3) return true; // absurd nesting: fail closed
-  return splitCommands(text).some((words) => {
+function runsMutatingCdk(text) {
+  const data = withoutMessageArguments(withoutHeredocData(text));
+  // Two conservative readings, deny if either matches: separators taken literally everywhere,
+  // and separators inside quotes treated as plain characters (`cdk -c "a=b;c" deploy`).
+  return scan(data) || scan(quotedSeparatorsAsSpaces(data));
+}
+
+/** Replaces command separators that sit inside quotes with spaces (substitutions are kept). */
+function quotedSeparatorsAsSpaces(text) {
+  let out = '';
+  let quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === '\\' && quote !== "'" && i + 1 < text.length) {
+        out += c + text[++i];
+        continue;
+      }
+      if (c === quote) quote = '';
+      else if (quote === "'" ? ';&|()`\n'.includes(c) : ';&|\n'.includes(c)) {
+        out += ' ';
+        continue;
+      }
+    } else if (c === "'" || c === '"') {
+      quote = c;
+    }
+    out += c;
+  }
+  return out;
+}
+
+/** Conservative scan: quotes and escapes removed, every segment checked. */
+function scan(text) {
+  const flat = text
+    .toLowerCase()
+    .replace(/\\\n/g, ' ')
+    .replace(/\$(?=['"])/g, '')
+    .replace(/["'\\]/g, '')
+    .replace(/>\|/g, ' ')
+    .replace(/&>>?/g, ' ')
+    .replace(/[<>]+(?:&-?\d*)?/g, ' ');
+  return flat.split(/\$\(|[;&|()`\n]/).some((segment) => {
+    const words = segment.trim().split(/\s+/);
     const cli = words.findIndex((word) => CDK_CLI.test(word));
-    if (cli !== -1 && words.slice(cli + 1).some((word) => MUTATING.has(word))) return true;
-    // Text handed to a shell or to eval is itself a command line.
-    return words.some((word, i) => {
-      const previous = words[i - 1];
-      const isScript =
-        previous === 'eval' ||
-        (previous === '-c' && words.slice(0, i - 1).some((w) => SHELLS.test(w)));
-      return isScript && runsMutatingCdk(word, depth + 1);
-    });
+    return cli !== -1 && words.slice(cli + 1).some((word) => MUTATING.has(word));
   });
 }
 
-/**
- * Splits a command line into simple commands, each a list of unquoted words. Quotes ('…', "…",
- * $'…') group characters into one word; a backslash escapes the next character; outside quotes,
- * `;` `&` `|` `(` `)` `` ` `` and newlines end a command, `$(` starts one, whitespace ends a word
- * and redirections (`<`, `>`, `2>&1`, …) end a word and are dropped.
- */
-function splitCommands(text) {
-  const commands = [];
+/** Removes heredoc bodies that a data sink reads (and that do not pipe on to a command). */
+function withoutHeredocData(text) {
+  const opener = /<<-?[ \t]*(['"]?)([A-Za-z_][\w-]*)\1/g;
+  let result = '';
+  let from = 0;
+  for (let match = opener.exec(text); match; match = opener.exec(text)) {
+    if (match.index < from) continue;
+    const lineEnd = text.indexOf('\n', match.index);
+    if (lineEnd === -1) break;
+    const delimiter = match[2];
+    const close = new RegExp(`^\\t*${delimiter}[ \\t]*$`, 'm');
+    close.lastIndex = 0;
+    const rest = text.slice(lineEnd + 1);
+    const end = rest.search(close);
+    if (end === -1) continue; // unterminated: keep it scanned
+    const lineStart = Math.max(
+      ...['\n', ';', '&', '|', '(', '`'].map((c) => text.lastIndexOf(c, match.index - 1)),
+    );
+    const head =
+      text
+        .slice(lineStart + 1, match.index)
+        .trim()
+        .split(/\s+/)[0] ?? '';
+    const sink = HEREDOC_SINKS.has(head.replace(/["'\\]/g, ''));
+    const pipesOn = text.slice(match.index, lineEnd).includes('|');
+    if (sink && !pipesOn) {
+      result += text.slice(from, lineEnd + 1);
+      from = lineEnd + 1 + end; // keep the delimiter line, drop the body
+    }
+  }
+  return result + text.slice(from);
+}
+
+/** Blanks fully quoted message and search arguments, which are data, not commands. */
+function withoutMessageArguments(text) {
+  const ranges = [];
   let words = [];
-  let word = '';
-  let inWord = false;
-  const endWord = () => {
-    if (inWord) words.push(word);
-    word = '';
-    inWord = false;
+  let word = null;
+  const startWord = (i) => {
+    if (!word) word = { start: i, text: '', quotedFrom: -1, fullyQuoted: false, risky: false };
   };
-  const endCommand = () => {
-    endWord();
-    if (words.length > 0) commands.push(words);
+  const endWord = (i) => {
+    if (word) words.push({ ...word, end: i });
+    word = null;
+  };
+  const endCommand = (i) => {
+    endWord(i);
+    markExempt(words, ranges);
     words = [];
   };
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    if (c === '\\') {
-      if (text[i + 1] === '\n') {
-        i++;
-        continue;
+    if (c === "'" || c === '"' || (c === '$' && text[i + 1] === "'")) {
+      startWord(i);
+      const begin = c === '$' ? i + 1 : i;
+      const quote = text[begin];
+      let j = begin + 1;
+      let content = '';
+      while (j < text.length && text[j] !== quote) {
+        if (text[j] === '\\' && quote !== "'") j++;
+        else if (text[j] === '\\' && c === '$') j++;
+        if (quote === '"' && (text[j] === '`' || (text[j] === '$' && text[j + 1] === '(')))
+          word.risky = true;
+        content += text[j] ?? '';
+        j++;
       }
-      word += text[i + 1] ?? '';
-      inWord = true;
+      if (j >= text.length) {
+        word.risky = true; // unterminated quote: never exempt
+        i = text.length;
+        endCommand(i);
+        break;
+      }
+      if (word.text === '' || /^--?[a-z]+=$/i.test(word.text)) {
+        word.quotedFrom = word.text.length;
+        word.fullyQuoted = text[j + 1] === undefined || /[\s;&|()`<>]/.test(text[j + 1]);
+      } else {
+        word.fullyQuoted = false;
+      }
+      word.text += content;
+      i = j;
+    } else if (c === '\\') {
+      startWord(i);
+      word.text += text[i + 1] ?? '';
+      word.fullyQuoted = false;
       i++;
-    } else if (c === "'" || (c === '$' && text[i + 1] === "'")) {
-      if (c === '$') i++;
-      const end = text.indexOf("'", i + 1);
-      const close = end === -1 ? text.length : end;
-      word += text.slice(i + 1, close);
-      inWord = true;
-      i = close;
-    } else if (c === '"') {
-      i++;
-      while (i < text.length && text[i] !== '"') {
-        if (text[i] === '\\' && i + 1 < text.length) i++;
-        word += text[i];
-        i++;
-      }
-      inWord = true;
-    } else if (c === '$' && text[i + 1] === '(') {
-      endCommand();
-      i++;
-    } else if (';&|()`\n'.includes(c)) {
-      endCommand();
-    } else if (c === '<' || c === '>') {
-      // A redirection: `2>` keeps no digits in the word, `>&1` / `<&0` skip the descriptor.
-      if (/^\d+$/.test(word)) {
-        word = '';
-        inWord = false;
-      }
-      endWord();
-      while (text[i + 1] === '>' || text[i + 1] === '<') i++;
-      if (text[i + 1] === '&') {
-        i++;
-        while (/\d|-/.test(text[i + 1] ?? '')) i++;
-      }
+    } else if (';&|()`\n'.includes(c) || (c === '$' && text[i + 1] === '(')) {
+      endCommand(i);
     } else if (/\s/.test(c)) {
-      endWord();
+      endWord(i);
     } else {
-      word += c;
-      inWord = true;
+      startWord(i);
+      word.text += c;
+      if (word.quotedFrom !== -1) word.fullyQuoted = false;
     }
   }
-  endCommand();
-  return commands;
+  endCommand(text.length);
+  if (ranges.length === 0) return text;
+  let out = '';
+  let from = 0;
+  for (const [start, end] of ranges.sort((a, b) => a[0] - b[0])) {
+    out += `${text.slice(from, start)}''`;
+    from = end;
+  }
+  return out + text.slice(from);
+}
+
+function markExempt(words, ranges) {
+  const first = words[0]?.text ?? '';
+  const isSearch = SEARCH_COMMANDS.has(first) || (first === 'git' && words[1]?.text === 'grep');
+  words.forEach((word, i) => {
+    if (!word.fullyQuoted || word.risky) return;
+    const flagPrefix = word.text.slice(0, word.quotedFrom);
+    const previous = words[i - 1]?.text ?? '';
+    const isMessage =
+      MESSAGE_FLAGS.has(previous) || MESSAGE_FLAGS.has(flagPrefix.replace(/=$/, ''));
+    if (isMessage || isSearch) ranges.push([word.start, word.end]);
+  });
 }
 
 function deny(reason) {

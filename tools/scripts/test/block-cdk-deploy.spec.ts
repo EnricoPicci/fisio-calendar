@@ -36,7 +36,7 @@ describe('Deploy gate — direct CDK commands that change an AWS account are blo
     expect(verdict(command)).toBe('deny');
   });
 
-  // Value: protects=spellings the shell runs as a deploy; fails_when=tokenizer regresses on quotes, escapes, redirects or nesting; why_new=cycle-1 and cycle-2 review bypasses; seam=none; no_claim=variable indirection
+  // Value: protects=spellings the shell runs as a deploy; fails_when=the scan stops failing closed for a wrapper, quote form, redirect or heredoc; why_new=bypasses found in review cycles 1-3; seam=none; no_claim=variable indirection
   it.each([
     ['a double-quoted subcommand', 'cdk "deploy"'],
     ['a single-quoted subcommand', "npx cdk 'deploy' --all"],
@@ -55,6 +55,28 @@ describe('Deploy gate — direct CDK commands that change an AWS account are blo
     ['a command run through bash -c', 'bash -c "cdk deploy --all"'],
     ['a command run through eval', 'eval "cdk deploy"'],
     ['a command substitution', 'echo $(cdk deploy)'],
+    ['a substitution inside double quotes', 'OUT="$(npx cdk deploy --require-approval never)"'],
+    ['a backtick inside double quotes', 'echo "result: `npx cdk deploy`"'],
+    ['a login shell with combined flags', "bash -lc 'npx cdk deploy'"],
+    ['an interactive zsh', 'zsh -ic "cdk deploy"'],
+    ['a shell with -c --', "sh -c -- 'cdk deploy'"],
+    ['npx -c', "npx -c 'cdk deploy'"],
+    ['npm exec -c', "npm exec -c 'cdk deploy'"],
+    [
+      'node -e running a child process',
+      `node -e "require('child_process').execSync('npx cdk deploy')"`,
+    ],
+    ['an escaped quote inside ANSI-C quoting', "echo $'it\\'s' ; cdk deploy"],
+    ['a both-streams redirect', 'cdk &>log deploy'],
+    ['a clobber redirect', 'cdk >|out deploy'],
+    ['an upper-case CLI name', 'npx CDK deploy'],
+    ['a heredoc fed to a shell', "bash <<'EOF'\ncdk deploy\nEOF"],
+    ['a heredoc piped on to a shell', "cat <<'EOF' | sh\ncdk deploy\nEOF"],
+    [
+      'a real command after a heredoc body with an apostrophe',
+      "cat <<'EOF'\nit doesn't\nEOF\npnpm exec cdk deploy",
+    ],
+    ['a message argument that hides a substitution', 'git commit -m "$(cdk deploy)"'],
   ])('denies %s, which the shell runs as a deploy', (_label, command) => {
     expect(verdict(command)).toBe('deny');
   });
@@ -81,6 +103,11 @@ describe('Deploy gate — direct CDK commands that change an AWS account are blo
     'grep -rn "cdk deploy" docs/',
     "gh pr create --body 'the gate blocks cdk deploy and cdk watch'",
     'ls -la',
+    `git commit -m "$(cat <<'EOF'\nfix: never run cdk deploy directly\nEOF\n)"`,
+    "gh pr create --title 'gate' --body-file - <<'EOF'\nNever run cdk deploy directly.\nEOF",
+    "cat >> CHANGELOG.md <<'EOF'\n- the gate blocks cdk watch and cdk destroy\nEOF",
+    'gh pr create --body="the gate blocks cdk deploy"',
+    "rg -n 'cdk (deploy|watch)' docs",
   ])('allows `%s`', (command) => {
     expect(verdict(command)).toBe('allow');
   });
