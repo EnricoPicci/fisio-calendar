@@ -6,6 +6,7 @@
 | Date | 2026-10-24 |
 | Source brief | `prompts/idea.md` |
 | Decisions taken | All defaults proposed in the clarification round were accepted (§2) |
+| Implementation plan | `docs/implementation-plan.md` (work packages per milestone, definition of done = spec rows and journeys green) |
 | v1.1 | WhatsApp deferred (email only in v1); local-first testing with a deploy gate (§11.4) |
 | v1.2 | Engineering review (`/plan-eng-review`, 18 issues + independent second opinion). Main changes: one Cognito pool with per-user TOTP (§8); per-request client status check (§8.2); no-overlap invariant for slots of any type (§3.2); idempotent outbox keys and an explicit delivery state machine driven by the tick + async invoke, no Streams (§5.4); CloudFront → Lambda Function URL with OAC, no shared secret (§4.4, §9.1); SPA routing by CloudFront Function, no custom error responses (§11.1); reminder catch-up semantics (§5.3); cancel-day idempotency (§5.3); transaction-conflict retry (§5.3); therapist digest + bounce handling in M2 (§3.4); audit without PII (§9.4); spec catalogue (§10); three CDK stacks (§11.1); re-sliced roadmap (§13); i18next and PWA removed from v1 |
 | v1.3 | **Headless UI journey specs** (§10.5): every UI flow is driven through the view-model classes' methods and Observable streams against the real in-process API, with recorded traces published as `docs/journeys.md`; view-model surface coverage enforced; Playwright reduced to binding checks |
