@@ -369,7 +369,7 @@ The same tick also runs: **extend-horizon** once a day (03:00 local, idempotent,
 
 ### 5.4 Notification pipeline (transactional outbox, explicit state machine)
 
-A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channel, to, template, params, status, attempts, nextAttemptAt, lastError, providerMessageId, createdAt, sentAt, ttl}`. It is written **in the same transaction** as the business change → never lost, never sent for a rolled-back change. Keys are **deterministic** (§6.2), so every write is idempotent and a booking can have at most one confirmation and one cancellation.
+A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channel, to, template, params, status, attempts, nextAttemptAt, lastError?, providerMessageId?, createdAt, sentAt?, ttl}`. It is written **in the same transaction** as the business change → never lost, never sent for a rolled-back change. Keys are **deterministic** (§6.2), so every write is idempotent and a booking can have at most one confirmation and one cancellation.
 
 **State machine** *(decision 12A)*, implemented as pure functions in `packages/domain/src/notification-state.ts`:
 

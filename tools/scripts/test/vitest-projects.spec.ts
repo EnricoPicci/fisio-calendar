@@ -36,7 +36,7 @@ async function projectSpecFiles(): Promise<Set<string>> {
 }
 
 describe('Vitest projects: every spec file runs in `pnpm test`', () => {
-  // Value: protects=a spec file is never silently left out of the suite; fails_when=a spec sits outside every project's include, or a project's exclude drops it; why_new=the suite only proved that the globs start; seam=none; no_claim=that the project's specs pass
+  // Value: protects=a spec file is never silently left out of the suite; fails_when=a spec sits outside every project's include, or a project's exclude drops it; why_new=the suite only proved that the globs start; seam=none; no_claim=that the project's specs pass; the exclude and root e2e/ branches can fail only once a project sets an exclude or Playwright specs exist
   it('each *.spec.ts(x) in the repository belongs to a Vitest project listed in the root config', async () => {
     const inProjects = await projectSpecFiles();
     const all = globSync('**/*.spec.{ts,tsx}', {

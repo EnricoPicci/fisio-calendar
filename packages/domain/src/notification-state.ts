@@ -118,12 +118,12 @@ export function startDelivery(state: DeliveryState, now: Date): DeliveryState {
 
 /**
  * sending → sent. The provider has accepted the message, so the item is sent even when the
- * provider returned no id; an empty id is not stored.
+ * provider returned no id; a missing or blank id is not stored.
  */
 export function markSent(
   state: DeliveryState,
   now: Date,
-  providerMessageId: string,
+  providerMessageId?: string,
 ): DeliveryState {
   if (state.status !== 'sending') throw new InvalidTransitionError('mark sent', state.status);
   const { lastError: _dropped, providerMessageId: _previous, ...rest } = state;
@@ -131,7 +131,7 @@ export function markSent(
   return {
     ...rest,
     status: 'sent',
-    ...(providerMessageId ? { providerMessageId } : {}),
+    ...(providerMessageId?.trim() ? { providerMessageId } : {}),
     sentAt: iso,
     updatedAt: iso,
   };
@@ -201,7 +201,7 @@ const MINUTE_MS = 60_000;
 /** The error's message, else its name, else its string form; never throws. */
 function describeError(error: unknown): string {
   try {
-    if (error instanceof Error) return error.message || error.name || 'Error';
+    if (error instanceof Error) return String(error.message || error.name || 'Error');
     return String(error) || 'unknown error';
   } catch {
     return 'unreadable error';

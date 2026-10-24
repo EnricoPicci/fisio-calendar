@@ -248,10 +248,17 @@ describe('S3 Delivery: notification state machine', () => {
     expect(lastError).not.toMatch(/[\uD800-\uDBFF]$/);
   });
 
-  // Value: protects=a stored error is never empty and reading the error never throws (empty message, '' thrown, throwing message or name getter); fails_when=a fallback or a try/catch in describeError/nameOf is dropped; why_new=only plain messages were covered; seam=none; no_claim=wording of the fallback
+  // Value: protects=a stored error is never empty and reading the error never throws (empty message, non-string message, '' thrown, throwing message or name getter); fails_when=a fallback, the String() conversion or a try/catch in describeError/nameOf is dropped; why_new=only plain messages were covered; seam=none; no_claim=wording of the fallback
   it('records an error with an empty or unreadable message by its name, without throwing', () => {
     const empty = failOnce(newPendingState(T0), T0, new PermanentError('')).state;
     expect(empty.lastError).toBe('PermanentError');
+
+    // SDK errors can carry a non-string message; it is stored as text, not a crash.
+    const numeric = Object.assign(new PermanentError('x'), { message: 503 as unknown as string });
+    expect(failOnce(newPendingState(T0), T0, numeric).state).toMatchObject({
+      status: 'failed',
+      lastError: '503',
+    });
 
     const unreadable = new Error('x');
     Object.defineProperty(unreadable, 'message', {
@@ -335,6 +342,8 @@ describe('S3 Delivery: notification state machine', () => {
     expect(permanent.state).toMatchObject({ status: 'failed', attempts: MAX_ATTEMPTS });
     expect(permanent.alertTherapist).toBe(true);
     expect(permanent.state.lastError).toContain('mailbox does not exist');
+    const long = markFailedAttempt(corrupt, T0, new RetryableError('y'.repeat(MAX_ERROR_LENGTH)));
+    expect(long.state.lastError).toHaveLength(MAX_ERROR_LENGTH);
     expect(() => backoffMinutes(0)).toThrow(RangeError);
     expect(() => backoffMinutes(Number.NaN)).toThrow(RangeError);
     expect(backoffMinutes(1)).toBe(1);
@@ -351,6 +360,9 @@ describe('S3 Delivery: notification state machine', () => {
     // A provider id left on the item by corrupt data is not carried into the sent state.
     const stale = { ...sending, providerMessageId: 'old' };
     expect(markSent(stale, at(1), '')).not.toHaveProperty('providerMessageId');
+    // A missing or blank id matches no bounce event, so it is not stored either.
+    expect(markSent(sending, at(1))).not.toHaveProperty('providerMessageId');
+    expect(markSent(sending, at(1), '   ')).not.toHaveProperty('providerMessageId');
   });
 
   it('transitions never mutate their input', () => {

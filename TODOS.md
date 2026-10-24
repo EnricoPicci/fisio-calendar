@@ -98,6 +98,21 @@ Recognise the domain errors by name or a shared brand as well as `instanceof`: t
 **Priority:** P2
 **Depends on:** WP0.4.
 
+### Time edges and zones from the WP0.2 follow-up review
+
+**What:** Three edges in `packages/domain/src/time.ts` and `notification-state.ts`, none reachable today:
+- The year range does not line up across zones: `localDateTimeToUtc('1900-01-01', '00:30')` gives `1899-12-31T23:30Z`, which `IsoDateTimeSchema` refuses, and `localDateOf` of `9999-12-31T23:30Z` is `10000-01-01`. Narrow the supported dates (for example 1900-01-02 to 9999-12-30) or derive the instant bounds from the local ones.
+- `requireTimeZone` caches each raw spelling (`europe/rome`, `EUROPE/ROME`) without a bound and accepts fixed offsets such as `+01:00`, which ignore summer time. Cache the resolved canonical name, and decide whether fixed-offset zones are refused, before a zone ever comes from a request or the database.
+- `classifyError` treats anything named `PermanentError` as permanent and does not look at `cause`. Settle in the WP0.6 adapter contract which wrappers may set that name, and whether a wrapped `PermanentError` cause counts.
+
+**Why:** Each is correct for today's only caller (the fixed Europe/Rome zone, no adapters yet) but turns into a 500, unbounded memory or wrong retries once later work packages feed it other input.
+
+**Context:** Claude adversarial review in the `/ship` of the WP0.2 follow-up PR.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.4 (zone or date input from requests), WP0.6 (channel adapters).
+
 ## Auth
 
 ### Email case and id format across Cognito and the auth emulator
