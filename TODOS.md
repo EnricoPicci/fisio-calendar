@@ -36,6 +36,7 @@
 - Redact or classify provider error text before it reaches `markFailedAttempt` (the domain only caps it at 500 characters): SES and SDK messages can carry recipient addresses, request ids or ARNs, and `lastError` is stored and shown on the dashboard. Log the full message instead.
 - A manual retry (T9) of a failure older than about a month leaves the item in its creation-month partition, which deliver-due no longer queries (§6.3), so it never sends and never alerts. Re-home the item to the current month in the retry use case, or refuse the retry with an error code.
 - `sweepStale` throws `InvalidTransitionError` for an item that is not stale by its own clock reading (the DynamoDB filter `updatedAt < :stale` and the domain's `now` can disagree at the boundary). Catch it per item in the jobs handler so one item cannot abort the sweep, and keep the notifier Lambda timeout plus SES SDK retries well under `SENDING_STALE_AFTER_MINUTES` (an infra assertion), or the sweep re-queues a send that is still running and the email goes out twice.
+- Channel adapters pass `markSent` a provider id that is a string or `undefined`, never invented and never another type: `markSent` runs after the provider accepted, and a non-string would make its `.trim()` throw, leaving the item in `sending` for the sweep to send again. Add a `typeof` guard in `markSent` (and store the trimmed id) when the adapter lands, with a spec that passes a non-string id.
 - A confirmation or reminder still in back-off can go out after the booking or slot was cancelled. Give items an expiry or a superseded check so `startDelivery` callers skip obsolete messages; cover it with a journey (cancel while CONF is in back-off: exactly one CANC, no later CONF).
 
 **Why:** Each one is correct in the pure domain but fails at the integration boundary, where nothing in WP0.2 can test it.
@@ -78,6 +79,8 @@
 
 **Why:** `SlotIdSchema` now refuses a slot id inside the DST gap, but other inputs (rule start times, date ranges) reach `localDateTimeToUtc` as separate date and time fields. Unmapped, the throw becomes a 500.
 
+Make `SlotIdSchema` fail validation rather than throw: `SlotId.startExists` rethrows anything that is not `NonexistentLocalTimeError` (an `InvalidTimeZoneError` on a runtime without full ICU time-zone data), and a throw inside a Zod `refine` escapes `safeParse` as a 500. Either catch in the refine or check at startup that Europe/Rome resolves. Make `startExists` return `false` for a malformed id instead of throwing, or keep it off the public `SlotId` object.
+
 Recognise the domain errors by name or a shared brand as well as `instanceof`: two copies of `@fisio/domain` in one bundle make `instanceof` fail and turn a 400 into a 500. `classifyError` already does this for `PermanentError`; use one helper for every exported error.
 
 **Context:** WP0.2 follow-up 26. The slot-id half is fixed in `SlotIdSchema` and `SlotId.format`; the mapper does not exist before WP0.4.
@@ -103,6 +106,8 @@ Recognise the domain errors by name or a shared brand as well as `instanceof`: t
 **What:** Three edges in `packages/domain/src/time.ts` and `notification-state.ts`, none reachable today:
 - The year range does not line up across zones: `localDateTimeToUtc('1900-01-01', '00:30')` gives `1899-12-31T23:30Z`, which `IsoDateTimeSchema` refuses, and `localDateOf` of `9999-12-31T23:30Z` is `10000-01-01`. Narrow the supported dates (for example 1900-01-02 to 9999-12-30) or derive the instant bounds from the local ones.
 - `requireTimeZone` caches each raw spelling (`europe/rome`, `EUROPE/ROME`) without a bound and accepts fixed offsets such as `+01:00`, which ignore summer time. Cache the resolved canonical name, and decide whether fixed-offset zones are refused, before a zone ever comes from a request or the database.
+- Zones with sub-minute offsets after 1900 (for example `Africa/Monrovia` in 1950, −00:44:30) get a silently wrong instant from `localDateTimeToUtc`: the round-trip check reads through the same tz engine and accepts it. Restrict the zone to whole-minute zones (or Rome only), or check the round-trip against `Intl` directly. The `MIN_YEAR` comment holds for Rome only.
+- `FixedClock`'s offset check looks only at the end of the string, so V8's legacy formats such as `'March 28 2027 09:00 +01:00'` pass. They are host-independent, but if specs should use canonical ISO only, anchor the whole pattern.
 - `classifyError` treats anything named `PermanentError` as permanent and does not look at `cause`. Settle in the WP0.6 adapter contract which wrappers may set that name, and whether a wrapped `PermanentError` cause counts.
 
 **Why:** Each is correct for today's only caller (the fixed Europe/Rome zone, no adapters yet) but turns into a 500, unbounded memory or wrong retries once later work packages feed it other input.
@@ -173,7 +178,7 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 
 **What:** Decide how `@fisio/domain` and `@fisio/contracts` are consumed outside Vite, Vitest and esbuild: either keep them source-only and require every runner (Lambda bundles, `tools/*` scripts, `pnpm tick`) to bundle or use a TypeScript loader, or add a build step with `exports` pointing at emitted `.js`. Cover the chosen path with the WP0.9 bundle smoke and one `tools` script run under plain `node`.
 
-**Why:** The packages export raw `.ts` with extensionless relative imports (`./time`). Node 22's type stripping does not resolve extensionless specifiers, so `node script.ts` importing `@fisio/domain` fails at load.
+**Why:** The packages export raw `.ts` with extensionless relative imports (`./time`), and they use TypeScript constructor parameter properties (`readonly date` in `NonexistentLocalTimeError`, `InvalidTimeZoneError`, `InvalidSlotIdError`). Node's type stripping rejects both: extensionless specifiers do not resolve, and parameter properties fail with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, so a loader that only adds extensions is not enough (consider `erasableSyntaxOnly`).
 
 **Context:** WP0.2 follow-up 15 (adversarial review). Bundled Lambdas are unaffected; scripts run directly are not.
 
