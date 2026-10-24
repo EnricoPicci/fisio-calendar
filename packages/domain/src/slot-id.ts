@@ -15,13 +15,18 @@ import {
  * `parse`, `of` and `is` check the format only, so a stored id stays readable whatever the
  * runtime's tz data says. Ids entering the system must also name a start that exists in Rome
  * (not inside the spring-forward gap): `format` enforces it, and request input goes through
- * `SlotIdSchema`, which checks {@link startExists}.
+ * `SlotIdSchema`, which checks {@link startExists}. So `format(parse(id))` round-trips only for
+ * an id whose start exists.
  */
 export const SLOT_TYPES = ['studio', 'pool'] as const;
 export type SlotType = (typeof SLOT_TYPES)[number];
 
 declare const slotIdBrand: unique symbol;
-/** A validated slot id. Obtain one only through {@link SlotId}. */
+/**
+ * A well-formed slot id. Obtain one only through {@link SlotId}: `format` for a new id,
+ * `SlotIdSchema` for request input (both refuse a start in the DST gap), `of` and `is` only for
+ * ids read back from storage.
+ */
 export type SlotId = string & { readonly [slotIdBrand]: true };
 
 export interface SlotIdParts {

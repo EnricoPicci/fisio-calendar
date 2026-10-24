@@ -130,7 +130,7 @@ describe('S3 Delivery: notification state machine', () => {
     expect(sent.lastError).toBeUndefined();
   });
 
-  it('sweep resets a sending item older than 10 minutes to pending as a failed attempt', () => {
+  it('sweep counts a sending item older than 10 minutes as a failed attempt', () => {
     expect(SENDING_STALE_AFTER_MINUTES).toBe(10);
     const sending = startDelivery(newPendingState(T0), T0);
     // "More than 10 minutes" (architecture §5.4): exactly 10 is not stale yet.
@@ -292,7 +292,7 @@ describe('S3 Delivery: notification state machine', () => {
     expect(failOnce(newPendingState(T0), T0, new PermanentError('x')).state.status).toBe('failed');
   });
 
-  // Value: protects=a corrupt stored attempt counter fails loudly instead of retrying forever with no delay; fails_when=attempts is NaN, a string or negative and the arithmetic goes on; why_new=attempts always came from newPendingState; seam=none; no_claim=how the notifier reports the throw
+  // Value: protects=a corrupt stored attempt counter fails the item and alerts (keeping the provider's reason) instead of retrying forever or sticking in sending; fails_when=the arithmetic goes on, it throws, or the provider reason is dropped; why_new=attempts always came from newPendingState; seam=none; no_claim=wording of lastError
   it('a stored attempt counter that is not a whole number fails the item and alerts', () => {
     const sending = startDelivery(newPendingState(T0), T0);
     for (const attempts of [Number.NaN, -1, 1.5, '2', undefined]) {
@@ -305,9 +305,36 @@ describe('S3 Delivery: notification state machine', () => {
       expect(outcome.alertTherapist, String(attempts)).toBe(true);
       // The sweep goes through the same path, so a stuck corrupt item fails too.
       expect(sweepStale(corrupt, at(11)).state.status, String(attempts)).toBe('failed');
-      // The therapist's manual retry (T9) gives it a fresh, valid counter.
-      expect(resetForManualRetry(outcome.state, at(60)).attempts).toBe(0);
+      const swept = sweepStale(corrupt, at(11));
+      expect(swept.state, String(attempts)).toMatchObject({
+        status: 'failed',
+        attempts: MAX_ATTEMPTS,
+      });
+      expect(swept.alertTherapist, String(attempts)).toBe(true);
+      // A corrupt item still in sending can neither start again nor be retried by hand.
+      expect(() => startDelivery(corrupt, at(60))).toThrow(InvalidTransitionError);
+      expect(() => resetForManualRetry(corrupt, at(60))).toThrow(InvalidTransitionError);
+      // The provider accepting it still means sent.
+      expect(markSent(corrupt, at(1), 'm-1')).toMatchObject({
+        status: 'sent',
+        providerMessageId: 'm-1',
+        sentAt: at(1).toISOString(),
+      });
+      // The therapist's manual retry (T9) gives the failed item a fresh, valid counter, due now.
+      const retried = resetForManualRetry(outcome.state, at(60));
+      expect(retried).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: at(60).toISOString(),
+      });
+      expect(isDue(retried, at(60))).toBe(true);
     }
+    // A permanent error on a corrupt item keeps the provider's reason for the therapist.
+    const corrupt = { ...sending, attempts: Number.NaN } as DeliveryState;
+    const permanent = markFailedAttempt(corrupt, T0, new PermanentError('mailbox does not exist'));
+    expect(permanent.state).toMatchObject({ status: 'failed', attempts: MAX_ATTEMPTS });
+    expect(permanent.alertTherapist).toBe(true);
+    expect(permanent.state.lastError).toContain('mailbox does not exist');
     expect(() => backoffMinutes(0)).toThrow(RangeError);
     expect(() => backoffMinutes(Number.NaN)).toThrow(RangeError);
     expect(backoffMinutes(1)).toBe(1);
@@ -321,6 +348,9 @@ describe('S3 Delivery: notification state machine', () => {
     expect(sent).toMatchObject({ status: 'sent', sentAt: at(1).toISOString() });
     expect(sent).not.toHaveProperty('providerMessageId');
     expect(isStale(sent, at(60))).toBe(false);
+    // A provider id left on the item by corrupt data is not carried into the sent state.
+    const stale = { ...sending, providerMessageId: 'old' };
+    expect(markSent(stale, at(1), '')).not.toHaveProperty('providerMessageId');
   });
 
   it('transitions never mutate their input', () => {

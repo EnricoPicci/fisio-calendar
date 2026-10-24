@@ -4,9 +4,10 @@
  * applies them with conditional writes, so a transition the diagram forbids throws here and the
  * matching conditional update fails there.
  *
- *   pending --deliver (due)--> sending --provider accepted--> sent
+ *   pending --deliver (due)--> sending --provider accepted (with or without an id)--> sent
  *   sending --retryable error, attempts < MAX_ATTEMPTS--> pending (nextAttemptAt = now + back-off)
- *   sending --permanent error, or attempts reach MAX_ATTEMPTS--> failed (alert the therapist)
+ *   sending --permanent error, attempts reach MAX_ATTEMPTS, or a corrupt stored counter-->
+ *       failed (alert the therapist)
  *   sending for more than SENDING_STALE_AFTER_MINUTES --sweep--> a retryable failed attempt
  *   failed --manual retry (T9)--> pending
  *
@@ -147,7 +148,9 @@ export function markFailedAttempt(state: DeliveryState, now: Date, error: unknow
   }
   const iso = now.toISOString();
   if (!Number.isInteger(state.attempts) || state.attempts < 0) {
-    const lastError = 'stored attempts counter is not a whole number';
+    const lastError = capErrorText(
+      `stored attempts counter is not a whole number; ${describeError(error)}`,
+    );
     return {
       state: { ...state, status: 'failed', attempts: MAX_ATTEMPTS, lastError, updatedAt: iso },
       alertTherapist: true,

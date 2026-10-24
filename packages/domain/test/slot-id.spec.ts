@@ -84,6 +84,10 @@ describe('SlotId: identity of a slot (<date>T<HH:mm>#<type>)', () => {
     });
     expect(SlotId.is('2027-03-28T02:30#studio')).toBe(true);
     expect(() => SlotId.of('2027-03-28T02:30#pool')).not.toThrow();
+    // Re-formatting a stored gap id is refused: the round-trip holds only for existing starts.
+    expect(() => SlotId.format(SlotId.parse('2027-03-28T02:30#studio'))).toThrow(
+      InvalidSlotIdError,
+    );
   });
 
   it('the error names the rejected input', () => {

@@ -386,7 +386,8 @@ A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channe
       |                                      permanent error (bad    |  +--------+
       |                                      address, template       |
       |                                      error) or attempts      |
-      |                                      reach 5                 v
+      |                                      reach 5 (or the stored  |
+      |                                      counter is corrupt)     v
       |   manual retry (T9): attempts = 0                       +--------+
       +-------------------------------------------------------- | failed | --> therapist alert, dashboard
                                                                 +--------+
@@ -405,9 +406,11 @@ Why not Streams: the outbox item plus deterministic keys already give the guaran
 ```ts
 interface NotificationChannel {
   readonly name: 'email' | 'whatsapp';
-  send(msg: RenderedMessage): Promise<{ providerMessageId: string }>;   // throws RetryableError | PermanentError
+  send(msg: RenderedMessage): Promise<{ providerMessageId?: string }>;  // throws RetryableError | PermanentError
 }
 ```
+
+A provider that accepts a message without returning an id still means sent: `markSent` records it without `providerMessageId`. An adapter never invents an id, because the id is what bounce and complaint events are matched on.
 
 `SesEmailChannel` (AWS SDK v3 `SendEmail`, cloud runtime), `SmtpEmailChannel` (nodemailer → Mailpit, local runtime), `FakeChannel` (records calls; used by every spec). A `WhatsAppChannel` is the planned later addition. Templates live in `packages/contracts` as typed render functions, so a spec can assert "client receives a reminder for pool at 17:00" against rendered text.
 
@@ -689,7 +692,7 @@ Definition of done for a milestone: its rows are green. Layer: D = domain, A = A
 | S3 | retryable error → pending with nextAttemptAt per back-off table; attempts incremented | D, A |
 | S3 | permanent error → failed + therapist alert notification | D, A |
 | S3 | attempts ≥ 5 → failed | D |
-| S3 | sweep resets `sending` older than 10 min to pending | A |
+| S3 | sweep counts `sending` older than 10 min as a failed attempt | A |
 | S3 | deliver-due picks items whose nextAttemptAt elapsed; ignores others | A |
 | S3 | async invoke after commit delivers immediately (in-process locally) | A |
 | S3 | duplicate async invocations deliver once (conditional pending → sending) | A |
