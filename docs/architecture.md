@@ -269,10 +269,13 @@ fisio-calendar/
 ├─ infra/                  AWS CDK app (TypeScript): Stateful, App, Edge stacks + assertions + bundle smoke
 ├─ tools/
 │  ├─ local/               docker-compose (DynamoDB Local, Mailpit), auth emulator, tick runner, seed
-│  └─ bootstrap/           `bootstrap:therapist` CLI (same IdentityProvider port; local, dev, prod)
+│  ├─ bootstrap/           `bootstrap:therapist` CLI (same IdentityProvider port; local, dev, prod)
+│  └─ scripts/             repository tooling: placeholder scripts, specs for the Claude Code hooks
 ├─ e2e/                    Playwright journeys against the local stack
-├─ docs/                   this document, TODOS.md, generated spec report, OpenAPI
-└─ .github/workflows/      CI/CD
+├─ docs/                   this document, implementation plan, generated spec report, OpenAPI
+├─ .claude/                Claude Code project settings and hooks (deploy gate, typecheck on edit)
+├─ .github/workflows/      CI/CD
+└─ TODOS.md                deferred work with context and priority
 ```
 
 The **domain** package has no I/O and no AWS dependency: it is where the rules in §3.2 live and where most unit specs run in milliseconds. Two definitions used by every layer live in exactly one place *(decision 14A)*: `packages/domain/slot-id.ts` (branded `SlotId`, `format()`/`parse()`) and `packages/contracts/errors.ts` (the `ErrorCode` catalogue below). Repository keys are derived from domain ids, never hand-built.
