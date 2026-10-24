@@ -7,14 +7,16 @@
 //      unchecked rather than passed silently.
 // Silent when everything passes. Remaining Biome diagnostics, type errors and timeouts are
 // returned to Claude as additional context, so they surface immediately instead of in a later
-// test run. Each step has its own timeout inside the hook's 90 s budget (.claude/settings.json).
+// test run. All steps share one deadline inside the hook's 90 s budget (.claude/settings.json),
+// so a slow step is reported as timed out instead of the whole hook being killed silently.
 // See docs/tooling-and-skills.md §2.3.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
 const MAX_LINES = 60;
-const STEP_TIMEOUT_MS = 40_000;
+const BUDGET_MS = 80_000;
+const deadline = Date.now() + BUDGET_MS;
 
 const input = readStdinJson();
 const filePath = input?.tool_input?.file_path;
@@ -40,9 +42,14 @@ if (pkgDir === root) {
   const tsc = join(root, 'node_modules', '.bin', 'tsc');
   if (existsSync(tsc) && existsSync(join(root, 'tsconfig.json'))) {
     const listed = run(tsc, ['-p', 'tsconfig.json', '--listFilesOnly'], { cwd: root });
-    if (
+    const real = realpath(file);
+    if (timedOut(listed)) {
+      report('tsc (root) --listFilesOnly', listed);
+    } else if (
       listed.status === 0 &&
-      !listed.stdout.split('\n').some((line) => resolve(root, line.trim()) === file)
+      !listed.stdout
+        .split('\n')
+        .some((line) => line.trim() && realpath(resolve(root, line.trim())) === real)
     ) {
       problems.push(
         `typecheck: ${rel} is not checked by any typecheck — it is outside every workspace package and not included by the root tsconfig.json. Move it into a package or add it to a tsconfig.`,
@@ -109,17 +116,33 @@ function runPackageScript(pkgDir, name) {
 }
 
 function run(command, args, options) {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0)
+    return { status: null, signal: 'SIGKILL', stdout: '', stderr: '', skipped: true };
   return spawnSync(command, args, {
     ...options,
     encoding: 'utf8',
-    timeout: STEP_TIMEOUT_MS,
+    timeout: remaining,
     killSignal: 'SIGKILL',
   });
 }
 
+function timedOut(result) {
+  return result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL';
+}
+
+function realpath(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 function report(label, result) {
-  if (result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL') {
-    problems.push(`${label}\ntimed out after ${STEP_TIMEOUT_MS / 1000} s; result unknown`);
+  if (timedOut(result)) {
+    const what = result.skipped ? 'not run: the time budget of the hook was used up' : 'timed out';
+    problems.push(`${label}\n${what} (budget ${BUDGET_MS / 1000} s); result unknown`);
   } else if (result.status !== 0) {
     problems.push(`${label}\n${trim(`${result.stdout ?? ''}${result.stderr ?? ''}`)}`);
   }

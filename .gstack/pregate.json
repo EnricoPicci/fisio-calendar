@@ -25,33 +25,41 @@
       "tools/scripts/test/block-cdk-deploy.spec.ts",
       "tools/scripts/test/claude-settings.spec.ts",
       "tools/scripts/test/not-yet.spec.ts",
-      "tools/scripts/test/on-ts-edit.spec.ts"
+      "tools/scripts/test/on-ts-edit.spec.ts",
+      "tools/scripts/test/root-scripts.spec.ts"
     ],
     "tools/scripts/package.json": [
       "tools/scripts/test/block-cdk-deploy.spec.ts",
       "tools/scripts/test/claude-settings.spec.ts",
       "tools/scripts/test/not-yet.spec.ts",
-      "tools/scripts/test/on-ts-edit.spec.ts"
+      "tools/scripts/test/on-ts-edit.spec.ts",
+      "tools/scripts/test/root-scripts.spec.ts"
     ],
     "tools/scripts/tsconfig.json": [
       "tools/scripts/test/block-cdk-deploy.spec.ts",
       "tools/scripts/test/claude-settings.spec.ts",
       "tools/scripts/test/not-yet.spec.ts",
-      "tools/scripts/test/on-ts-edit.spec.ts"
+      "tools/scripts/test/on-ts-edit.spec.ts",
+      "tools/scripts/test/root-scripts.spec.ts"
     ],
     "tools/scripts/vitest.config.ts": [
       "tools/scripts/test/block-cdk-deploy.spec.ts",
       "tools/scripts/test/claude-settings.spec.ts",
       "tools/scripts/test/not-yet.spec.ts",
-      "tools/scripts/test/on-ts-edit.spec.ts"
+      "tools/scripts/test/on-ts-edit.spec.ts",
+      "tools/scripts/test/root-scripts.spec.ts"
     ],
-    "package.json": ["tools/scripts/test/not-yet.spec.ts"],
+    "package.json": [
+      "tools/scripts/test/not-yet.spec.ts",
+      "tools/scripts/test/root-scripts.spec.ts"
+    ],
     "tools/scripts/not-yet.mjs": ["tools/scripts/test/not-yet.spec.ts"],
     "tools/scripts/test/run-node.ts": [
       "tools/scripts/test/block-cdk-deploy.spec.ts",
       "tools/scripts/test/claude-settings.spec.ts",
       "tools/scripts/test/not-yet.spec.ts",
-      "tools/scripts/test/on-ts-edit.spec.ts"
+      "tools/scripts/test/on-ts-edit.spec.ts",
+      "tools/scripts/test/root-scripts.spec.ts"
     ],
     "pnpm-workspace.yaml": [],
     "pnpm-lock.yaml": [],

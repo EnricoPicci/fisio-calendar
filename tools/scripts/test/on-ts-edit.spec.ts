@@ -12,6 +12,8 @@ const HOOK = repoPath('.claude/hooks/on-ts-edit.mjs');
 let root: string;
 // A directory next to the fixture whose path starts with the fixture's path (`<root>-sibling`).
 let sibling: string;
+// An unrelated directory elsewhere in the temp dir, holding a real .ts file in a failing package.
+let outside: string;
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'on-ts-edit-'));
@@ -38,6 +40,10 @@ beforeAll(() => {
   mkdirSync(join(root, 'bad', 'node_modules', 'x'), { recursive: true });
   writeFileSync(join(root, 'bad', 'node_modules', 'x', 'package.json'), failing);
   writeFileSync(join(root, 'bad', 'node_modules', 'x', 'index.ts'), 'export {};\n');
+  outside = mkdtempSync(join(tmpdir(), 'on-ts-edit-outside-'));
+  mkdirSync(join(outside, 'src'), { recursive: true });
+  writeFileSync(join(outside, 'package.json'), failing);
+  writeFileSync(join(outside, 'src', 'index.ts'), 'export {};\n');
   sibling = `${root}-sibling`;
   mkdirSync(join(sibling, 'src'), { recursive: true });
   writeFileSync(join(sibling, 'package.json'), failing);
@@ -47,6 +53,7 @@ beforeAll(() => {
 afterAll(() => {
   rmSync(root, { recursive: true, force: true });
   rmSync(sibling, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
 });
 
 function edit(filePath: string, toolName = 'Edit') {
@@ -89,13 +96,13 @@ describe('Edit hook — typecheck the owning package after each .ts/.tsx edit', 
   it.each([
     ['a non-TypeScript file', 'README.md'],
     ['a file that does not exist', 'good/src/missing.ts'],
-    ['a file outside the project', '/etc/hosts.ts'],
+    ['a real file outside the project, in a failing package', '<outside>/src/index.ts'],
     ['a non-TypeScript file in a failing package', 'bad/notes.md'],
     ['a missing .ts file in a failing package', 'bad/src/missing.ts'],
     ['a file under node_modules', 'bad/node_modules/x/index.ts'],
     ['a sibling directory whose path starts with the project path', '<sibling>/src/index.ts'],
   ])('ignores %s', (_label, filePath) => {
-    const run = edit(filePath.replace('<sibling>', sibling));
+    const run = edit(filePath.replace('<sibling>', sibling).replace('<outside>', outside));
     expect(run.status).toBe(0);
     expect(run.stdout).toBe('');
   });

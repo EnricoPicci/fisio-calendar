@@ -15,7 +15,7 @@ function decide(stdin: string): string {
   return JSON.parse(run.stdout).hookSpecificOutput.permissionDecision;
 }
 
-describe('Deploy gate — direct CDK deploys are blocked (architecture §11.4)', () => {
+describe('Deploy gate — direct CDK commands that change an AWS account are blocked (architecture §11.4)', () => {
   it.each([
     'cdk deploy',
     'npx cdk deploy --context stage=dev',
@@ -27,14 +27,34 @@ describe('Deploy gate — direct CDK deploys are blocked (architecture §11.4)',
   });
 
   it.each([
+    ['continuous hotswap deploys', 'cdk watch'],
+    ['a stack import', 'npx cdk import App'],
+    ['an account bootstrap', 'cdk bootstrap aws://123456789012/eu-central-1'],
+    ['a stack teardown', 'cdk destroy --all --force'],
+    ['a rollback', 'cdk rollback App'],
+  ])('denies %s, which also changes the account', (_label, command) => {
+    expect(verdict(command)).toBe('deny');
+  });
+
+  // Value: protects=spellings the shell runs as a deploy; fails_when=tokenizer regresses on quotes, escapes, redirects or nesting; why_new=cycle-1 and cycle-2 review bypasses; seam=none; no_claim=variable indirection
+  it.each([
     ['a double-quoted subcommand', 'cdk "deploy"'],
     ['a single-quoted subcommand', "npx cdk 'deploy' --all"],
+    ['an ANSI-C quoted subcommand', "cdk $'deploy'"],
     ['a backslash-escaped subcommand', 'cdk \\deploy'],
     ['a split quoted subcommand', "cdk dep''loy"],
     ['a version-pinned CLI', 'npx cdk@2 deploy'],
     ['the aws-cdk package name', 'npx aws-cdk@latest deploy'],
     ['the CLI by path', './node_modules/.bin/cdk deploy'],
     ['a deploy on the next line', 'cdk synth\ncdk deploy'],
+    ['an output redirect glued to the subcommand', 'cdk deploy>out.log'],
+    ['an input redirect glued to the subcommand', 'cdk deploy<in'],
+    ['a redirect glued to the CLI', 'cdk>/dev/null deploy'],
+    ['a separator inside a quoted argument', 'cdk -c "a=b;c" deploy'],
+    ['a pipe inside a quoted profile', 'cdk --profile "p|q" deploy'],
+    ['a command run through bash -c', 'bash -c "cdk deploy --all"'],
+    ['a command run through eval', 'eval "cdk deploy"'],
+    ['a command substitution', 'echo $(cdk deploy)'],
   ])('denies %s, which the shell runs as a deploy', (_label, command) => {
     expect(verdict(command)).toBe('deny');
   });
@@ -48,13 +68,18 @@ describe('Deploy gate — direct CDK deploys are blocked (architecture §11.4)',
     expect(output.permissionDecisionReason).toContain('pnpm deploy:dev');
   });
 
+  // Value: protects=daily commands that only mention the CLI; fails_when=quoted text is read as a command again; why_new=cycle-2 red team false positives (commit -m, grep, gh --body); seam=none; no_claim=unquoted prose
   it.each([
     'pnpm deploy:dev',
     'cdk synth',
     'cdk diff --context stage=dev',
     'cdk synth && echo deploy',
     'cdk synth\necho deploy',
+    'cdk synth 2>&1 | tee synth.log',
     'cat .claude/hooks/block-cdk-deploy.mjs',
+    'git commit -m "docs: never run cdk deploy directly"',
+    'grep -rn "cdk deploy" docs/',
+    "gh pr create --body 'the gate blocks cdk deploy and cdk watch'",
     'ls -la',
   ])('allows `%s`', (command) => {
     expect(verdict(command)).toBe('allow');

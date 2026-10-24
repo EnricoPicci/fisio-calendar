@@ -38,9 +38,14 @@ describe('Claude Code project settings — the hooks stay wired (tooling doc §2
 });
 
 describe('Claude Code project settings — the permission lists', () => {
-  it('denies the common direct-deploy spellings without depending on node', () => {
+  it('denies the common spellings of every account-changing CDK command without depending on node', () => {
     expect(settings.permissions.deny).toEqual(
-      expect.arrayContaining(['Bash(cdk deploy*)', 'Bash(npx cdk deploy*)']),
+      expect.arrayContaining(
+        ['deploy', 'watch', 'import', 'bootstrap', 'destroy', 'rollback'].flatMap((sub) => [
+          `Bash(cdk ${sub}*)`,
+          `Bash(npx cdk ${sub}*)`,
+        ]),
+      ),
     );
   });
 
@@ -52,6 +57,9 @@ describe('Claude Code project settings — the permission lists', () => {
         'Bash(rm -rf*)',
         'Bash(git diff*--output*)',
         'Bash(git log*--output*)',
+        'Bash(git diff*--ext-diff*)',
+        'Bash(git log*--ext-diff*)',
+        'Bash(cdk*--app*)',
       ]),
     );
   });
