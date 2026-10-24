@@ -44,6 +44,25 @@ describe('S1 Slot generation: time helpers in Europe/Rome', () => {
     expect(utc('2027-03-28', '03:00')).toBe('2027-03-28T01:00:00.000Z');
   });
 
+  // Value: protects=DST resolution is the same on a laptop in Rome and a Lambda in UTC; fails_when=the conversion consults the host time zone (it did: CI on UTC picked 01:30Z for the fall-back hour); why_new=specs ran only under the developer's own zone; seam=none; no_claim=zones without Intl data
+  it('gives the same instants whatever the host time zone is', () => {
+    const original = process.env.TZ;
+    try {
+      for (const host of ['UTC', 'Europe/Rome', 'America/New_York', 'Asia/Tokyo']) {
+        process.env.TZ = host;
+        expect(utc('2027-10-31', '02:30'), host).toBe('2027-10-31T00:30:00.000Z');
+        expect(utc('2027-03-28', '09:00'), host).toBe('2027-03-28T07:00:00.000Z');
+        expect(utc('2027-10-31', '09:00'), host).toBe('2027-10-31T08:00:00.000Z');
+        expect(() => localDateTimeToUtc('2027-03-28', '02:30'), host).toThrow(
+          NonexistentLocalTimeError,
+        );
+      }
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
+  });
+
   it('resolves an ambiguous fall-back time to its first occurrence (02:30 CEST on 2027-10-31)', () => {
     expect(utc('2027-10-31', '02:30')).toBe('2027-10-31T00:30:00.000Z');
   });

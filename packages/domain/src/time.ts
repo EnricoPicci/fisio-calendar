@@ -1,4 +1,4 @@
-import { TZDate } from '@date-fns/tz';
+import { TZDate, tzOffset } from '@date-fns/tz';
 import { format } from 'date-fns';
 
 /**
@@ -48,13 +48,27 @@ export function localDateTimeToUtc(
   const [y, m, d] = requireDate(date);
   const match = LOCAL_TIME.exec(time);
   if (!match) throw new RangeError(`Invalid local time "${time}", expected HH:mm`);
-  const zoned = new TZDate(y, m - 1, d, Number(match[1]), Number(match[2]), timeZone);
-  // TZDate moves a nonexistent wall-clock time forward; detect that instead of guessing.
-  if (format(zoned, 'yyyy-MM-dd HH:mm') !== `${date} ${time}`) {
-    throw new NonexistentLocalTimeError(date, time, timeZone);
-  }
-  return new Date(zoned.getTime());
+  // The wall-clock reading as if it were UTC. The real instant is `wall - offset` for one of
+  // the zone's offsets around that day (one before a DST change, one after; they are equal on
+  // ordinary days). Keep the candidates whose local reading round-trips: none is the
+  // spring-forward gap, two is the fall-back overlap, where the earlier one is chosen. This
+  // never consults the host's time zone, so a laptop in Rome and a Lambda in UTC agree.
+  const wall = Date.UTC(y, m - 1, d, Number(match[1]), Number(match[2]));
+  const offsets = new Set([
+    tzOffset(timeZone, new Date(wall - DAY_MS)),
+    tzOffset(timeZone, new Date(wall + DAY_MS)),
+  ]);
+  const candidates = [...offsets]
+    .map((offsetMinutes) => new Date(wall - offsetMinutes * 60_000))
+    .filter((instant) => localDateOf(instant, timeZone) === date)
+    .filter((instant) => localTimeOf(instant, timeZone) === time)
+    .sort((a, b) => a.getTime() - b.getTime());
+  const first = candidates[0];
+  if (!first) throw new NonexistentLocalTimeError(date, time, timeZone);
+  return first;
 }
+
+const DAY_MS = 86_400_000;
 
 /** The local calendar date (`yyyy-mm-dd`) of an instant in `timeZone`. */
 export function localDateOf(instant: Date, timeZone: string = THERAPIST_TIME_ZONE): string {
