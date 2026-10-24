@@ -278,7 +278,7 @@ fisio-calendar/
 └─ TODOS.md                deferred work with context and priority
 ```
 
-The **domain** package has no I/O and no AWS dependency: it is where the rules in §3.2 live and where most unit specs run in milliseconds. Two definitions used by every layer live in exactly one place *(decision 14A)*: `packages/domain/slot-id.ts` (branded `SlotId`, `format()`/`parse()`) and `packages/contracts/errors.ts` (the `ErrorCode` catalogue below). Repository keys are derived from domain ids, never hand-built.
+The **domain** package has no I/O and no AWS dependency: it is where the rules in §3.2 live and where most unit specs run in milliseconds. Two definitions used by every layer live in exactly one place *(decision 14A)*: `packages/domain/src/slot-id.ts` (branded `SlotId`, `format()`/`parse()`) and `packages/contracts/src/errors.ts` (the `ErrorCode` catalogue below). Repository keys are derived from domain ids, never hand-built.
 
 ### 5.2 API
 
@@ -286,7 +286,7 @@ The **domain** package has no I/O and no AWS dependency: it is where the rules i
 - Framework: **Hono** with `@hono/zod-openapi` — routes declare their Zod request/response schemas once; the same declaration validates at runtime, types the handler, and generates the OpenAPI document published to `docs/openapi.json`. Hono runs on Lambda (`hono/aws-lambda`), in Node for local development (`@hono/node-server`), and **in-process in tests** (`app.request()`).
 - One Lambda for the whole API: one artifact, one cold start to warm, trivial to test; with < 1 request/s there is nothing to gain from per-route functions.
 
-#### Error catalogue (`packages/contracts/errors.ts`)
+#### Error catalogue (`packages/contracts/src/errors.ts`)
 
 | Code | HTTP | Meaning |
 |---|---|---|
@@ -371,7 +371,7 @@ The same tick also runs: **extend-horizon** once a day (03:00 local, idempotent,
 
 A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channel, to, template, params, status, attempts, nextAttemptAt, lastError, providerMessageId, createdAt, sentAt, ttl}`. It is written **in the same transaction** as the business change → never lost, never sent for a rolled-back change. Keys are **deterministic** (§6.2), so every write is idempotent and a booking can have at most one confirmation and one cancellation.
 
-**State machine** *(decision 12A)*, implemented as pure functions in `packages/domain/notification-state.ts`:
+**State machine** *(decision 12A)*, implemented as pure functions in `packages/domain/src/notification-state.ts`:
 
 ```
                  deliver (conditional update, only from pending with nextAttemptAt <= now)
@@ -522,7 +522,7 @@ Mobile-first (clients mostly use phones). An installable PWA is a backlog item (
 
 ### 7.3 Stack
 
-React 19 · TypeScript (strict) · Vite · RxJS 7 · React Router · a **typed Italian strings module** (`packages/contracts/strings/it.ts`, keyed, compile-time checked; a second language is a second module plus a `locale` switch — no i18n framework in v1) · `Intl` for dates and numbers · Tailwind CSS v4 · `aws-amplify` (Auth category only) · `openapi-typescript` + `openapi-fetch` for the typed API client · Vitest + Testing Library · Playwright.
+React 19 · TypeScript (strict) · Vite · RxJS 7 · React Router · a **typed Italian strings module** (`packages/contracts/src/strings/it.ts`, keyed, compile-time checked; a second language is a second module plus a `locale` switch — no i18n framework in v1) · `Intl` for dates and numbers · Tailwind CSS v4 · `aws-amplify` (Auth category only) · `openapi-typescript` + `openapi-fetch` for the typed API client · Vitest + Testing Library · Playwright.
 
 ---
 
