@@ -365,11 +365,11 @@ The conditions inside the transaction are the source of truth *(decisions 10A, 1
 4. Write the marker last. Invoke `notifier` asynchronously.
 5. A CloudWatch alarm fires if the marker is still absent 60 minutes after `reminderTime`.
 
-The same tick also runs: **extend-horizon** once a day (03:00 local, idempotent, enforcing the no-overlap invariant), **digest** at `digestTime` (default 07:30; marker `JOB#digest#<date>`; one `DIGEST#<date>#email` notification to the therapist), **deliver-due** (all `pending` items whose `nextAttemptAt ≤ now`) and **sweep** (an item in `sending` for more than 10 minutes counts as a failed attempt: back to `pending` with `attempts + 1`, or `failed` at the attempt limit).
+The same tick also runs: **extend-horizon** once a day (03:00 local, idempotent, enforcing the no-overlap invariant), **digest** at `digestTime` (default 07:30; marker `JOB#digest#<date>`; one `DIGEST#<date>#email` notification to the therapist), **deliver-due** (all `pending` items whose `nextAttemptAt ≤ now`) and **sweep** (an item in `sending` for more than 10 minutes counts as a failed attempt: back to `pending` with `attempts + 1`, or `failed` at the attempt limit or when the stored counter is corrupt).
 
 ### 5.4 Notification pipeline (transactional outbox, explicit state machine)
 
-A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channel, to, template, params, status, attempts, nextAttemptAt, lastError?, providerMessageId?, createdAt, sentAt?, ttl}`. It is written **in the same transaction** as the business change → never lost, never sent for a rolled-back change. Keys are **deterministic** (§6.2), so every write is idempotent and a booking can have at most one confirmation and one cancellation.
+A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channel, to, template, params, status, attempts, nextAttemptAt, updatedAt, lastError?, providerMessageId?, createdAt, sentAt?, ttl}`. It is written **in the same transaction** as the business change → never lost, never sent for a rolled-back change. Keys are **deterministic** (§6.2), so every write is idempotent and a booking can have at most one confirmation and one cancellation.
 
 **State machine** *(decision 12A)*, implemented as pure functions in `packages/domain/src/notification-state.ts`:
 
@@ -410,7 +410,7 @@ interface NotificationChannel {
 }
 ```
 
-A provider that accepts a message without returning an id still means sent: `markSent` records it without `providerMessageId`. An adapter never invents an id, because the id is what bounce and complaint events are matched on.
+A provider that accepts a message without returning an id still means sent: `markSent` records it without `providerMessageId`, and only a successful send stores one. An adapter never invents an id: it is kept to trace a message in SES logs and events, while bounce and complaint handling matches the recipient (SES feedback below).
 
 `SesEmailChannel` (AWS SDK v3 `SendEmail`, cloud runtime), `SmtpEmailChannel` (nodemailer → Mailpit, local runtime), `FakeChannel` (records calls; used by every spec). A `WhatsAppChannel` is the planned later addition. Templates live in `packages/contracts` as typed render functions, so a spec can assert "client receives a reminder for pool at 17:00" against rendered text.
 
@@ -692,7 +692,7 @@ Definition of done for a milestone: its rows are green. Layer: D = domain, A = A
 | S3 | retryable error → pending with nextAttemptAt per back-off table; attempts incremented | D, A |
 | S3 | permanent error → failed + therapist alert notification | D, A |
 | S3 | attempts ≥ 5 → failed | D |
-| S3 | sweep counts `sending` older than 10 min as a failed attempt | A |
+| S3 | sweep counts `sending` older than 10 min as a failed attempt | D, A |
 | S3 | deliver-due picks items whose nextAttemptAt elapsed; ignores others | A |
 | S3 | async invoke after commit delivers immediately (in-process locally) | A |
 | S3 | duplicate async invocations deliver once (conditional pending → sending) | A |

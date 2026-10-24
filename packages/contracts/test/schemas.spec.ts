@@ -51,11 +51,17 @@ describe('Zod base schemas', () => {
     expect(ok(EmailSchema, '')).toBe(false);
   });
 
-  it('IsoDate accepts only real yyyy-mm-dd dates', () => {
+  // Value: protects=a request date outside 1900-9999 is refused at the schema, before the tz math; fails_when=IsoDateSchema swaps isIsoDate for a format-only check such as z.iso.date(); why_new=the rows above check calendar validity only; seam=none; no_claim=none beyond protects
+  it('IsoDate accepts only real yyyy-mm-dd dates in the supported years (1900–9999)', () => {
     expect(ok(IsoDateSchema, '2028-02-29')).toBe(true);
     expect(ok(IsoDateSchema, '2027-02-29')).toBe(false);
     expect(ok(IsoDateSchema, '2027-13-01')).toBe(false);
     expect(ok(IsoDateSchema, '2027-03-28T00:00:00Z')).toBe(false);
+    // Supported years only (MIN_YEAR-MAX_YEAR).
+    expect(ok(IsoDateSchema, '1900-01-01')).toBe(true);
+    expect(ok(IsoDateSchema, '9999-12-31')).toBe(true);
+    expect(ok(IsoDateSchema, '1899-12-31')).toBe(false);
+    expect(ok(IsoDateSchema, '0050-06-15')).toBe(false);
   });
 
   it('LocalTime accepts HH:mm from 00:00 to 23:59', () => {

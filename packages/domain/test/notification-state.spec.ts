@@ -193,6 +193,8 @@ describe('S3 Delivery: notification state machine', () => {
     const actions = {
       deliver: (s: DeliveryState) => startDelivery(s, at(60)),
       'provider accepted': (s: DeliveryState) => markSent(s, at(60), 'late'),
+      'provider accepted without an id': (s: DeliveryState) => markSent(s, at(60)),
+      'provider accepted with a blank id': (s: DeliveryState) => markSent(s, at(60), '  '),
       'retryable error': (s: DeliveryState) =>
         markFailedAttempt(s, at(60), new RetryableError('x')),
       'permanent error': (s: DeliveryState) =>
@@ -202,6 +204,8 @@ describe('S3 Delivery: notification state machine', () => {
     } as const;
     const forbidden: [keyof typeof states, keyof typeof actions][] = [
       ['pending', 'provider accepted'],
+      ['pending', 'provider accepted without an id'],
+      ['pending', 'provider accepted with a blank id'],
       ['pending', 'retryable error'],
       ['pending', 'permanent error'],
       ['pending', 'sweep'],
@@ -210,12 +214,16 @@ describe('S3 Delivery: notification state machine', () => {
       ['sending', 'manual retry'],
       ['sent', 'deliver'],
       ['sent', 'provider accepted'],
+      ['sent', 'provider accepted without an id'],
+      ['sent', 'provider accepted with a blank id'],
       ['sent', 'retryable error'],
       ['sent', 'permanent error'],
       ['sent', 'sweep'],
       ['sent', 'manual retry'],
       ['failed', 'deliver'],
       ['failed', 'provider accepted'],
+      ['failed', 'provider accepted without an id'],
+      ['failed', 'provider accepted with a blank id'],
       ['failed', 'retryable error'],
       ['failed', 'permanent error'],
       ['failed', 'sweep'],
@@ -311,7 +319,6 @@ describe('S3 Delivery: notification state machine', () => {
       });
       expect(outcome.alertTherapist, String(attempts)).toBe(true);
       // The sweep goes through the same path, so a stuck corrupt item fails too.
-      expect(sweepStale(corrupt, at(11)).state.status, String(attempts)).toBe('failed');
       const swept = sweepStale(corrupt, at(11));
       expect(swept.state, String(attempts)).toMatchObject({
         status: 'failed',
@@ -344,10 +351,35 @@ describe('S3 Delivery: notification state machine', () => {
     expect(permanent.state.lastError).toContain('mailbox does not exist');
     const long = markFailedAttempt(corrupt, T0, new RetryableError('y'.repeat(MAX_ERROR_LENGTH)));
     expect(long.state.lastError).toHaveLength(MAX_ERROR_LENGTH);
-    expect(() => backoffMinutes(0)).toThrow(RangeError);
-    expect(() => backoffMinutes(Number.NaN)).toThrow(RangeError);
-    expect(backoffMinutes(1)).toBe(1);
+  });
+
+  // Value: protects=the back-off lookup refuses a count that is not a whole number from 1 instead of returning a zero delay; fails_when=the guard is dropped or the clamp changes; why_new=only reachable through valid counters in markFailedAttempt; seam=none; no_claim=none beyond protects
+  it('back-off takes a whole number of failed attempts from 1 and stays at the last step', () => {
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() => backoffMinutes(bad), String(bad)).toThrow(RangeError);
+    }
+    expect(backoffMinutes(1)).toBe(BACKOFF_MINUTES[0]);
     expect(backoffMinutes(MAX_ATTEMPTS + 3)).toBe(BACKOFF_MINUTES.at(-1));
+  });
+
+  // Value: protects=an item has a provider id only after a send succeeded, so a failed or retried item never shows an id that belongs to no send; fails_when=markFailedAttempt or the sweep carries a stale id, or markSent keeps it; why_new=specs never seeded an id on a sending item; seam=none; no_claim=how corrupt data got the id
+  it('only a successful send stores a provider id', () => {
+    const stale = { ...startDelivery(newPendingState(T0), T0), providerMessageId: 'old' };
+    for (const outcome of [
+      markFailedAttempt(stale, at(1), new RetryableError('x')),
+      markFailedAttempt(stale, at(1), new PermanentError('x')),
+      sweepStale(stale, at(11)),
+    ]) {
+      expect(outcome.state).not.toHaveProperty('providerMessageId');
+    }
+    expect(markSent(stale, at(1), 'new').providerMessageId).toBe('new');
+    // A corrupt item accepted without a usable id is sent and stores none.
+    const corrupt = { ...stale, attempts: Number.NaN } as DeliveryState;
+    for (const id of [undefined, '', '   ']) {
+      const sent = markSent(corrupt, at(1), id);
+      expect(sent, String(id)).toMatchObject({ status: 'sent', sentAt: at(1).toISOString() });
+      expect(sent, String(id)).not.toHaveProperty('providerMessageId');
+    }
   });
 
   // Value: protects=a message the provider accepted is recorded as sent even without an id, so the sweep never re-sends it, and no empty id is stored; fails_when=markSent throws or stores ''; why_new=specs always pass an id; seam=none; no_claim=id format per provider
