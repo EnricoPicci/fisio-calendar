@@ -1,0 +1,30 @@
+# The local stack's containers (docs/architecture.md §11.4): DynamoDB Local and Mailpit.
+# `pnpm local:up` starts them and waits for both to be healthy, then creates the table;
+# `pnpm local:down` stops them. CI runs the same file. Ports bind to 127.0.0.1 only.
+name: fisio-local
+
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:3.3.1
+    # -sharedDb: one database for every access key and region, so the API, the tools and the
+    # specs see the same tables. -inMemory: nothing survives `local:down`; `pnpm seed` rebuilds.
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      # Any HTTP answer (DynamoDB Local returns 400 to a bare GET) means the server is up.
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8000 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  mailpit:
+    image: axllent/mailpit:v1.31.4
+    ports:
+      - "127.0.0.1:1025:1025" # SMTP, used by SmtpEmailChannel (WP0.6)
+      - "127.0.0.1:8025:8025" # web UI and REST API
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

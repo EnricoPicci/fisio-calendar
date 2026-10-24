@@ -6,5 +6,15 @@
   "description": "Shared test tooling: in-process fetch adapter, recorders, JourneyHarness, FaultInjectingDynamo, fake JWTs, journey report renderer.",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1146.0",
+    "@aws-sdk/lib-dynamodb": "3.1146.0",
+    "@fisio/infra": "workspace:*",
+    "@fisio/local": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./global-setup": "./src/global-setup.ts"
   }
 }

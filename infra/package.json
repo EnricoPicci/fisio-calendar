@@ -6,5 +6,8 @@
   "description": "AWS CDK app: Stateful, App and Edge stacks, infra assertions, bundle smoke.",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "exports": {
+    "./table-definition": "./lib/table-definition.ts"
   }
 }
