@@ -5,3 +5,4 @@ packages:
   - tools/local
   - tools/bootstrap
   - e2e
+  - tools/scripts

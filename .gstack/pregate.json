@@ -1,0 +1,101 @@
+{
+  "$schema": "https://github.com/garrytan/gstack/docs/pregate.md#pregate-v1",
+  "runner": "pnpm exec vitest run {files}",
+  "strays": {
+    "allow": [
+      "biome.json",
+      "pnpm-workspace.yaml",
+      "tsconfig.base.json",
+      ".nvmrc",
+      ".gstack",
+      ".claude",
+      ".github",
+      "apps",
+      "packages",
+      "infra",
+      "tools",
+      "e2e"
+    ]
+  },
+  "dependencies": {
+    ".claude/hooks/block-cdk-deploy.mjs": ["tools/scripts/test/block-cdk-deploy.spec.ts"],
+    ".claude/hooks/on-ts-edit.mjs": ["tools/scripts/test/on-ts-edit.spec.ts"],
+    ".claude/settings.json": ["tools/scripts/test/claude-settings.spec.ts"],
+    "vitest.config.ts": [
+      "tools/scripts/test/block-cdk-deploy.spec.ts",
+      "tools/scripts/test/claude-settings.spec.ts",
+      "tools/scripts/test/not-yet.spec.ts",
+      "tools/scripts/test/on-ts-edit.spec.ts"
+    ],
+    "tools/scripts/package.json": [
+      "tools/scripts/test/block-cdk-deploy.spec.ts",
+      "tools/scripts/test/claude-settings.spec.ts",
+      "tools/scripts/test/not-yet.spec.ts",
+      "tools/scripts/test/on-ts-edit.spec.ts"
+    ],
+    "tools/scripts/tsconfig.json": [
+      "tools/scripts/test/block-cdk-deploy.spec.ts",
+      "tools/scripts/test/claude-settings.spec.ts",
+      "tools/scripts/test/not-yet.spec.ts",
+      "tools/scripts/test/on-ts-edit.spec.ts"
+    ],
+    "tools/scripts/vitest.config.ts": [
+      "tools/scripts/test/block-cdk-deploy.spec.ts",
+      "tools/scripts/test/claude-settings.spec.ts",
+      "tools/scripts/test/not-yet.spec.ts",
+      "tools/scripts/test/on-ts-edit.spec.ts"
+    ],
+    "package.json": ["tools/scripts/test/not-yet.spec.ts"],
+    "tools/scripts/not-yet.mjs": ["tools/scripts/test/not-yet.spec.ts"],
+    "tools/scripts/test/run-node.ts": [
+      "tools/scripts/test/block-cdk-deploy.spec.ts",
+      "tools/scripts/test/claude-settings.spec.ts",
+      "tools/scripts/test/not-yet.spec.ts",
+      "tools/scripts/test/on-ts-edit.spec.ts"
+    ],
+    "pnpm-workspace.yaml": [],
+    "pnpm-lock.yaml": [],
+    "tsconfig.json": [],
+    "tsconfig.base.json": [],
+    "biome.json": [],
+    ".nvmrc": [],
+    ".github/workflows/*.yml": [],
+    ".gstack/pregate.json": [],
+    "apps/*/package.json": [],
+    "apps/*/tsconfig.json": [],
+    "apps/*/tsconfig.node.json": [],
+    "apps/*/vitest.config.ts": [],
+    "apps/*/src/index.ts": [],
+    "packages/*/package.json": [],
+    "packages/*/tsconfig.json": [],
+    "packages/*/vitest.config.ts": [],
+    "packages/*/src/index.ts": [],
+    "tools/local/package.json": [],
+    "tools/local/tsconfig.json": [],
+    "tools/local/src/index.ts": [],
+    "tools/bootstrap/package.json": [],
+    "tools/bootstrap/tsconfig.json": [],
+    "tools/bootstrap/src/index.ts": [],
+    "infra/package.json": [],
+    "infra/tsconfig.json": [],
+    "infra/vitest.config.ts": [],
+    "infra/lib/index.ts": [],
+    "e2e/package.json": [],
+    "e2e/tsconfig.json": [],
+    "e2e/tests/index.ts": []
+  },
+  "guards": [
+    {
+      "id": "typecheck",
+      "when": ["**/*.ts", "**/*.tsx", "**/tsconfig*.json", "**/package.json"],
+      "command": "pnpm typecheck",
+      "fix": "fix the reported type errors (pnpm typecheck)"
+    },
+    {
+      "id": "lint",
+      "when": ["**/*.ts", "**/*.tsx", "**/*.mjs", "**/*.json"],
+      "command": "pnpm lint",
+      "fix": "pnpm lint:fix, then fix what remains"
+    }
+  ]
+}
