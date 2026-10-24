@@ -6,7 +6,14 @@ import { defineConfig } from 'vitest/config';
 // (docs/tooling-and-skills.md §2.5): only failures print their output.
 export default defineConfig({
   test: {
-    projects: ['packages/*', 'apps/*', 'infra', 'tools/scripts'],
+    // Globs name the config files, not folders: a folder glob such as `packages/*` also
+    // matches files like packages/README.md, which Vitest rejects at startup.
+    projects: [
+      'packages/*/vitest.config.ts',
+      'apps/*/vitest.config.ts',
+      'infra/vitest.config.ts',
+      'tools/scripts/vitest.config.ts',
+    ],
     reporters: ['dot'],
     silent: 'passed-only',
     passWithNoTests: true,

@@ -14,6 +14,63 @@
 **Priority:** P3
 **Depends on:** v1 launched; the therapist's decision on who pays per message and whether reminders or only cancellations go through WhatsApp.
 
+### Fence notifier writes on the delivery attempt
+
+**What:** Make the notifier's conditional writes for `markSent`, `markFailedAttempt` and `sweepStale` check a per-attempt token (`updatedAt` from `startDelivery`, or a new `attemptToken` in `DeliveryState`), not only `status = sending`. Add a spec for the late-completion race.
+
+**Why:** The domain transitions in `packages/domain/src/notification-state.ts` check status only. A slow notifier whose item was swept and re-sent sees `sending` again, so its late result can overwrite the second attempt: a duplicate email, a lost outcome or a phantom failed attempt.
+
+**Context:** Found by the red team in the WP0.2 `/ship` review. The fix belongs where the conditional `UpdateItem` is written (notification repository, WP0.6). Fencing on `updatedAt` needs no domain change; a token field does.
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** WP0.6.
+
+### Notifier edge cases from the WP0.2 review
+
+**What:** Handle four cases when the notifier applies the delivery state machine:
+- Do not raise `alertTherapist` for the therapist's own FAIL, alert or DIGEST notifications, so a broken SES account does not loop; rely on the failed-notifications alarm instead.
+- Make template-render errors and SES rejections such as `MessageRejected` permanent (`PermanentError`), with one channel spec per SES error name; `classifyError` treats anything unknown as retryable.
+- Parse stored `nextAttemptAt` and `updatedAt` through `IsoDateTimeSchema` at the repository boundary; a malformed value makes `isDue`/`isStale` false forever and the item sticks silently.
+- When a transition drops `lastError` (`markSent`), the repository must `REMOVE` the attribute; an `UpdateItem SET` of the returned fields leaves the old error on a sent item.
+- Redact or classify provider error text before it reaches `markFailedAttempt` (the domain only caps it at 500 characters): SES and SDK messages can carry recipient addresses, request ids or ARNs, and `lastError` is stored and shown on the dashboard. Log the full message instead.
+- A manual retry (T9) of a failure older than about a month leaves the item in its creation-month partition, which deliver-due no longer queries (§6.3), so it never sends and never alerts. Re-home the item to the current month in the retry use case, or refuse the retry with an error code.
+- A confirmation or reminder still in back-off can go out after the booking or slot was cancelled. Give items an expiry or a superseded check so `startDelivery` callers skip obsolete messages; cover it with a journey (cancel while CONF is in back-off: exactly one CANC, no later CONF).
+
+**Why:** Each one is correct in the pure domain but fails at the integration boundary, where nothing in WP0.2 can test it.
+
+**Context:** Red-team findings from the WP0.2 `/ship` review, deferred because they belong to the notifier and repository code (CLAUDE.md: never widen a work package). Cover each with an API spec on DynamoDB Local.
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** WP0.6.
+
+## API
+
+### Slot ids in URL paths
+
+**What:** Give `SlotId` a URL-safe path form (for example `SlotId.toPathSegment` / `fromPathSegment` with `encodeURIComponent`) and require the SPA API client and the route param schemas to use it; add a spec that round-trips `/admin/slots/{slotId}/cancel` through the in-process fetch adapter.
+
+**Why:** A slot id contains `#` and `:`. Unencoded in `POST /admin/slots/{slotId}/cancel`, the `#` starts a URL fragment, so the request silently hits `/admin/slots/2027-03-28T09:00` and returns 404 or the wrong route.
+
+**Context:** Red-team finding in the WP0.2 `/ship` review. Decide in WP0.4 (route params) at the latest, before WP1.4 adds the slot cancel and reopen routes. Check that `%23` survives CloudFront and the Function URL.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.4.
+
+### OpenAPI patterns for refine-only schemas
+
+**What:** Give `SlotIdSchema`, `IsoDateSchema` and `LocalTimeSchema` in `packages/contracts/src/schemas.ts` a `.regex()` and an example next to their `refine`, use a brand instead of `transform` for `SlotIdSchema` if response schemas need it, and assert in the OpenAPI generation spec that these fields carry a pattern. Word the `conflict_retry_exhausted` meaning so it cannot drift from the API's retry constant ("after 3 attempts" today).
+
+**Why:** `@hono/zod-openapi` cannot describe a `refine` or a `transform`, so `docs/openapi.json` would show plain strings and the typed SPA client would lose the formats.
+
+**Context:** Red-team and maintainability findings in the WP0.2 `/ship` review; the schemas validate correctly today, only the generated contract is affected.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.4 (OpenAPI generation).
+
 ## Web app
 
 ### Installable PWA

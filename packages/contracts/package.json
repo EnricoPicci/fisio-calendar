@@ -6,5 +6,12 @@
   "description": "Zod schemas and DTO types shared by web and api; the ErrorCode catalogue; the typed Italian strings module.",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fisio/domain": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "exports": {
+    ".": "./src/index.ts"
   }
 }
