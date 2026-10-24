@@ -28,9 +28,16 @@ describe('Clock: injectable source of the current instant', () => {
     expect(clock.now().toISOString()).toBe('2027-03-29T01:10:30.000Z');
   });
 
+  // Value: protects=now() never returns an Invalid Date for an offset-bearing but impossible instant; fails_when=the NaN check is dropped (the offset regex alone passes '2027-13-45T00:00:00Z'); why_new=both strings above fail the offset check first; seam=none; no_claim=none beyond protects
   it('refuses an invalid instant', () => {
     expect(() => new FixedClock('not a date')).toThrow(RangeError);
     expect(() => new FixedClock('2027-01-01T00:00:00Z').set('nope')).toThrow(RangeError);
+    // Well-formed offset, impossible instant: only the NaN check can refuse these.
+    expect(() => new FixedClock('2027-13-45T00:00:00Z')).toThrow(RangeError);
+    expect(() => new FixedClock(new Date(Number.NaN))).toThrow(RangeError);
+    const clock = new FixedClock('2027-01-01T00:00:00Z');
+    expect(() => clock.set('2027-02-30T25:00:00+01:00')).toThrow(RangeError);
+    expect(clock.now().toISOString()).toBe('2027-01-01T00:00:00.000Z');
   });
 
   it('advance refuses a non-finite elapsed time and keeps the current instant', () => {
@@ -38,6 +45,26 @@ describe('Clock: injectable source of the current instant', () => {
     expect(() => clock.advance({ minutes: Number.NaN })).toThrow(RangeError);
     expect(() => clock.advance({ hours: Number.POSITIVE_INFINITY })).toThrow(RangeError);
     expect(clock.now().toISOString()).toBe('2027-03-28T07:00:00.000Z');
+  });
+
+  // Value: protects=now() never returns an Invalid Date after a huge advance; fails_when=advance only checks finiteness; why_new=the finite check lets 1e10 days through; seam=none; no_claim=dates before year 0
+  it('advance refuses to leave the range a Date can hold', () => {
+    const clock = new FixedClock('2027-03-28T07:00:00Z');
+    expect(() => clock.advance({ days: 1e10 })).toThrow(RangeError);
+    expect(() => clock.advance({ days: -1e10 })).toThrow(RangeError);
+    expect(clock.now().toISOString()).toBe('2027-03-28T07:00:00.000Z');
+  });
+
+  // Value: protects=a spec's fixed instant is the same on every host; fails_when=a string without Z or offset is read in the host zone; why_new=all specs happened to write Z; seam=none; no_claim=offsets other than ±hh:mm
+  it('refuses an instant string without Z or an offset, which would depend on the host zone', () => {
+    expect(() => new FixedClock('2027-03-28T09:00:00')).toThrow(RangeError);
+    expect(() => new FixedClock('2027-03-28')).toThrow(RangeError);
+    expect(() => new FixedClock('2027-03-28T07:00:00Z').set('2027-03-28T09:00')).toThrow(
+      RangeError,
+    );
+    expect(new FixedClock('2027-03-28T09:00:00+02:00').now().toISOString()).toBe(
+      '2027-03-28T07:00:00.000Z',
+    );
   });
 
   it('systemClock reads the current instant of the process clock', () => {

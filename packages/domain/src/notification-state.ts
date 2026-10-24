@@ -4,10 +4,11 @@
  * applies them with conditional writes, so a transition the diagram forbids throws here and the
  * matching conditional update fails there.
  *
- *   pending --deliver (due)--> sending --provider accepted--> sent
- *   sending --retryable error, attempts < 5--> pending (nextAttemptAt = now + back-off)
- *   sending --permanent error, or attempts reach 5--> failed (alert the therapist)
- *   sending older than 10 min --sweep--> counted as a retryable failed attempt
+ *   pending --deliver (due)--> sending --provider accepted (with or without an id)--> sent
+ *   sending --retryable error, attempts < MAX_ATTEMPTS--> pending (nextAttemptAt = now + back-off)
+ *   sending --permanent error, attempts reach MAX_ATTEMPTS, or a corrupt stored counter-->
+ *       failed (alert the therapist)
+ *   sending for more than SENDING_STALE_AFTER_MINUTES --sweep--> a retryable failed attempt
  *   failed --manual retry (T9)--> pending
  *
  * Instants are stored as UTC ISO strings, matching the persisted NOTIFICATION item.
@@ -22,7 +23,7 @@ export interface DeliveryState {
   readonly nextAttemptAt: string;
   /** Instant of the last transition; the sweep measures a stuck `sending` from it. */
   readonly updatedAt: string;
-  /** Provider error of the last failed attempt, at most {@link MAX_ERROR_LENGTH} characters. */
+  /** Provider error of the last failed attempt, at most {@link MAX_ERROR_LENGTH} UTF-16 units. */
   readonly lastError?: string;
   readonly providerMessageId?: string;
   readonly sentAt?: string;
@@ -69,14 +70,22 @@ export class InvalidTransitionError extends Error {
 
 export type ErrorClass = 'retryable' | 'permanent';
 
-/** Only an explicit {@link PermanentError} is permanent; anything unknown is retried. */
+/**
+ * Only a {@link PermanentError} is permanent; anything unknown is retried. It is recognised by
+ * name as well, so an error from a second copy of this module (two bundles) still counts.
+ */
 export function classifyError(error: unknown): ErrorClass {
-  return error instanceof PermanentError ? 'permanent' : 'retryable';
+  return error instanceof PermanentError || nameOf(error) === 'PermanentError'
+    ? 'permanent'
+    : 'retryable';
 }
 
-/** Minutes to wait after `attempts` failed attempts (1-based). */
+/** Minutes to wait after `attempts` failed attempts (a whole number from 1). */
 export function backoffMinutes(attempts: number): number {
-  const index = Math.min(Math.max(attempts, 1), BACKOFF_MINUTES.length) - 1;
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new RangeError(`Failed attempts must be a whole number from 1, got ${String(attempts)}`);
+  }
+  const index = Math.min(attempts, BACKOFF_MINUTES.length) - 1;
   return BACKOFF_MINUTES[index] ?? 0;
 }
 
@@ -89,10 +98,11 @@ export function isDue(state: DeliveryState, now: Date): boolean {
   return state.status === 'pending' && Date.parse(state.nextAttemptAt) <= now.getTime();
 }
 
+/** A `sending` item last touched more than {@link SENDING_STALE_AFTER_MINUTES} ago. */
 export function isStale(state: DeliveryState, now: Date): boolean {
   return (
     state.status === 'sending' &&
-    now.getTime() - Date.parse(state.updatedAt) >= SENDING_STALE_AFTER_MINUTES * 60_000
+    now.getTime() - Date.parse(state.updatedAt) > SENDING_STALE_AFTER_MINUTES * MINUTE_MS
   );
 }
 
@@ -106,43 +116,66 @@ export function startDelivery(state: DeliveryState, now: Date): DeliveryState {
   return { ...state, status: 'sending', updatedAt: now.toISOString() };
 }
 
-/** sending → sent. */
+/**
+ * sending → sent. The provider has accepted the message, so the item is sent even when the
+ * provider returned no id; a missing or blank id is not stored.
+ */
 export function markSent(
   state: DeliveryState,
   now: Date,
-  providerMessageId: string,
+  providerMessageId?: string,
 ): DeliveryState {
   if (state.status !== 'sending') throw new InvalidTransitionError('mark sent', state.status);
-  const { lastError: _dropped, ...rest } = state;
+  const { lastError: _dropped, providerMessageId: _previous, ...rest } = state;
   const iso = now.toISOString();
-  return { ...rest, status: 'sent', providerMessageId, sentAt: iso, updatedAt: iso };
+  return {
+    ...rest,
+    status: 'sent',
+    ...(providerMessageId?.trim() ? { providerMessageId } : {}),
+    sentAt: iso,
+    updatedAt: iso,
+  };
 }
 
-/** sending → pending with back-off, or → failed (permanent error or attempt limit reached). */
-export function markFailedAttempt(state: DeliveryState, now: Date, error: unknown): FailureOutcome {
-  if (state.status !== 'sending') {
-    throw new InvalidTransitionError('record a failed attempt of', state.status);
+/**
+ * sending → pending with back-off, or → failed (permanent error or attempt limit reached).
+ * A stored attempt counter that is not a whole number cannot be trusted to stop the retries,
+ * so the item fails and the therapist is alerted. Only a successful send stores a provider id
+ * and a sent time, so any left on the item by corrupt data are dropped here.
+ */
+export function markFailedAttempt(item: DeliveryState, now: Date, error: unknown): FailureOutcome {
+  if (item.status !== 'sending') {
+    throw new InvalidTransitionError('record a failed attempt of', item.status);
+  }
+  const { providerMessageId: _notSent, sentAt: _notSentAt, ...state } = item;
+  const iso = now.toISOString();
+  if (!Number.isInteger(state.attempts) || state.attempts < 0) {
+    const lastError = capErrorText(
+      `stored attempts counter is not a whole number; ${describeError(error)}`,
+    );
+    return {
+      state: { ...state, status: 'failed', attempts: MAX_ATTEMPTS, lastError, updatedAt: iso },
+      alertTherapist: true,
+    };
   }
   const attempts = state.attempts + 1;
-  const iso = now.toISOString();
-  const lastError = (error instanceof Error ? error.message : String(error)).slice(
-    0,
-    MAX_ERROR_LENGTH,
-  );
+  const lastError = capErrorText(describeError(error));
   if (classifyError(error) === 'permanent' || attempts >= MAX_ATTEMPTS) {
     return {
       state: { ...state, status: 'failed', attempts, lastError, updatedAt: iso },
       alertTherapist: true,
     };
   }
-  const nextAttemptAt = new Date(now.getTime() + backoffMinutes(attempts) * 60_000).toISOString();
+  const nextAttemptAt = new Date(
+    now.getTime() + backoffMinutes(attempts) * MINUTE_MS,
+  ).toISOString();
   return {
     state: { ...state, status: 'pending', attempts, lastError, nextAttemptAt, updatedAt: iso },
     alertTherapist: false,
   };
 }
 
-/** A `sending` item stuck for 10 minutes (the notifier died mid-send) counts as a failed attempt. */
+/** A stale `sending` item (the notifier died mid-send) counts as a retryable failed attempt. */
 export function sweepStale(state: DeliveryState, now: Date): FailureOutcome {
   if (!isStale(state, now)) {
     throw new InvalidTransitionError(
@@ -163,4 +196,34 @@ export function resetForManualRetry(state: DeliveryState, now: Date): DeliverySt
   if (state.status !== 'failed') throw new InvalidTransitionError('retry', state.status);
   const iso = now.toISOString();
   return { ...state, status: 'pending', attempts: 0, nextAttemptAt: iso, updatedAt: iso };
+}
+
+const MINUTE_MS = 60_000;
+
+/** The error's message, else its name, else its string form; never throws. */
+function describeError(error: unknown): string {
+  try {
+    if (error instanceof Error) return String(error.message || error.name || 'Error');
+    return String(error) || 'unknown error';
+  } catch {
+    return 'unreadable error';
+  }
+}
+
+/** At most {@link MAX_ERROR_LENGTH} UTF-16 units, without splitting a surrogate pair. */
+function capErrorText(text: string): string {
+  if (text.length <= MAX_ERROR_LENGTH) return text;
+  const last = text.charCodeAt(MAX_ERROR_LENGTH - 1);
+  const splitsPair = last >= 0xd800 && last <= 0xdbff;
+  return text.slice(0, splitsPair ? MAX_ERROR_LENGTH - 1 : MAX_ERROR_LENGTH);
+}
+
+function nameOf(error: unknown): unknown {
+  try {
+    return typeof error === 'object' && error !== null
+      ? (error as { name?: unknown }).name
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

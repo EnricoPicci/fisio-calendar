@@ -10,9 +10,11 @@ describe('@fisio/contracts public entry point', () => {
     expect(contracts.stringsIt).toBe(strings);
   });
 
-  it('the SPA can map a problem+json type to its Italian message through the entry point', () => {
+  it('the SPA can map a problem+json type to its status and Italian message through the entry point', () => {
     const code = contracts.errorCodeFromProblemType('urn:fisio:error:cutoff_passed');
     expect(code).toBe('cutoff_passed');
-    expect(code && contracts.stringsIt.errors[code]).toBe(strings.errors.cutoff_passed);
+    if (!code) throw new Error('unreachable');
+    expect(contracts.httpStatusOf(code)).toBe(422);
+    expect(contracts.stringsIt.errors[code]).toEqual(expect.stringMatching(/\S/));
   });
 });

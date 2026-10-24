@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BACKOFF_MINUTES,
+  backoffMinutes,
   classifyError,
   type DeliveryState,
   InvalidTransitionError,
@@ -129,21 +130,22 @@ describe('S3 Delivery: notification state machine', () => {
     expect(sent.lastError).toBeUndefined();
   });
 
-  it('sweep resets a sending item older than 10 minutes to pending as a failed attempt', () => {
+  it('sweep counts a sending item older than 10 minutes as a failed attempt', () => {
     expect(SENDING_STALE_AFTER_MINUTES).toBe(10);
     const sending = startDelivery(newPendingState(T0), T0);
-    expect(isStale(sending, at(9.99))).toBe(false);
-    expect(isStale(sending, at(10))).toBe(true);
-    expect(() => sweepStale(sending, at(9))).toThrow(InvalidTransitionError);
+    // "More than 10 minutes" (architecture §5.4): exactly 10 is not stale yet.
+    expect(isStale(sending, at(10))).toBe(false);
+    expect(isStale(sending, new Date(at(10).getTime() + 1))).toBe(true);
+    expect(() => sweepStale(sending, at(10))).toThrow(InvalidTransitionError);
 
-    const { state, alertTherapist } = sweepStale(sending, at(10));
+    const { state, alertTherapist } = sweepStale(sending, at(11));
     expect(alertTherapist).toBe(false);
     expect(state).toMatchObject({
       status: 'pending',
       attempts: 1,
-      nextAttemptAt: at(11).toISOString(),
+      nextAttemptAt: at(12).toISOString(),
     });
-    expect(state.lastError).toMatch(/10 minutes/);
+    expect(state.lastError).toEqual(expect.stringMatching(/./));
   });
 
   it('a sweep that reaches the attempt limit fails the item and alerts', () => {
@@ -155,7 +157,7 @@ describe('S3 Delivery: notification state machine', () => {
     const stuck = startDelivery(state, started);
     const swept = sweepStale(
       stuck,
-      new Date(started.getTime() + SENDING_STALE_AFTER_MINUTES * 60_000),
+      new Date(started.getTime() + SENDING_STALE_AFTER_MINUTES * 60_000 + 1),
     );
     expect(swept.state.status).toBe('failed');
     expect(swept.alertTherapist).toBe(true);
@@ -191,6 +193,8 @@ describe('S3 Delivery: notification state machine', () => {
     const actions = {
       deliver: (s: DeliveryState) => startDelivery(s, at(60)),
       'provider accepted': (s: DeliveryState) => markSent(s, at(60), 'late'),
+      'provider accepted without an id': (s: DeliveryState) => markSent(s, at(60)),
+      'provider accepted with a blank id': (s: DeliveryState) => markSent(s, at(60), '  '),
       'retryable error': (s: DeliveryState) =>
         markFailedAttempt(s, at(60), new RetryableError('x')),
       'permanent error': (s: DeliveryState) =>
@@ -200,6 +204,8 @@ describe('S3 Delivery: notification state machine', () => {
     } as const;
     const forbidden: [keyof typeof states, keyof typeof actions][] = [
       ['pending', 'provider accepted'],
+      ['pending', 'provider accepted without an id'],
+      ['pending', 'provider accepted with a blank id'],
       ['pending', 'retryable error'],
       ['pending', 'permanent error'],
       ['pending', 'sweep'],
@@ -208,12 +214,16 @@ describe('S3 Delivery: notification state machine', () => {
       ['sending', 'manual retry'],
       ['sent', 'deliver'],
       ['sent', 'provider accepted'],
+      ['sent', 'provider accepted without an id'],
+      ['sent', 'provider accepted with a blank id'],
       ['sent', 'retryable error'],
       ['sent', 'permanent error'],
       ['sent', 'sweep'],
       ['sent', 'manual retry'],
       ['failed', 'deliver'],
       ['failed', 'provider accepted'],
+      ['failed', 'provider accepted without an id'],
+      ['failed', 'provider accepted with a blank id'],
       ['failed', 'retryable error'],
       ['failed', 'permanent error'],
       ['failed', 'sweep'],
@@ -238,12 +248,169 @@ describe('S3 Delivery: notification state machine', () => {
     expect(failOnce(newPendingState(T0), T0, new Error('short')).state.lastError).toBe('short');
   });
 
+  // Value: protects=the cap never leaves half of a UTF-16 surrogate pair (an emoji) at the end; fails_when=the cap slices at a fixed index; why_new=the cap spec uses ASCII only; seam=none; no_claim=grapheme clusters
+  it('the error cap does not split a character outside the basic plane', () => {
+    const text = `${'x'.repeat(MAX_ERROR_LENGTH - 1)}😀tail`;
+    const { lastError } = failOnce(newPendingState(T0), T0, new Error(text)).state;
+    expect(lastError).toBe('x'.repeat(MAX_ERROR_LENGTH - 1));
+    expect(lastError).not.toMatch(/[\uD800-\uDBFF]$/);
+  });
+
+  // Value: protects=a stored error is never empty and reading the error never throws (empty message, non-string message, '' thrown, throwing message or name getter); fails_when=a fallback, the String() conversion or a try/catch in describeError/nameOf is dropped; why_new=only plain messages were covered; seam=none; no_claim=wording of the fallback
+  it('records an error with an empty or unreadable message by its name, without throwing', () => {
+    const empty = failOnce(newPendingState(T0), T0, new PermanentError('')).state;
+    expect(empty.lastError).toBe('PermanentError');
+
+    // SDK errors can carry a non-string message; it is stored as text, not a crash.
+    const numeric = Object.assign(new PermanentError('x'), { message: 503 as unknown as string });
+    expect(failOnce(newPendingState(T0), T0, numeric).state).toMatchObject({
+      status: 'failed',
+      lastError: '503',
+    });
+
+    const unreadable = new Error('x');
+    Object.defineProperty(unreadable, 'message', {
+      get() {
+        throw new Error('boom');
+      },
+    });
+    const { state } = failOnce(newPendingState(T0), T0, unreadable);
+    expect(state).toMatchObject({ status: 'pending', attempts: 1 });
+    expect(state.lastError).toEqual(expect.stringMatching(/./));
+    expect(failOnce(newPendingState(T0), T0, Object.create(null)).state.lastError).toEqual(
+      expect.stringMatching(/./),
+    );
+    expect(failOnce(newPendingState(T0), T0, '').state.lastError).toEqual(
+      expect.stringMatching(/./),
+    );
+
+    const nameless = new Error('provider said no');
+    Object.defineProperty(nameless, 'name', {
+      get() {
+        throw new Error('boom');
+      },
+    });
+    expect(classifyError(nameless)).toBe('retryable');
+    expect(failOnce(newPendingState(T0), T0, nameless).state).toMatchObject({
+      status: 'pending',
+      attempts: 1,
+      lastError: 'provider said no',
+    });
+  });
+
+  // Value: protects=a PermanentError from a second copy of the module (two bundles) still fails the item; fails_when=classifyError relies on instanceof only; why_new=specs share one module instance; seam=none; no_claim=errors renamed by minifiers
+  it('a permanent error from another copy of the module is still permanent', () => {
+    class PermanentError extends Error {
+      override name = 'PermanentError';
+    }
+    expect(classifyError(new PermanentError('bad address'))).toBe('permanent');
+    expect(failOnce(newPendingState(T0), T0, new PermanentError('x')).state.status).toBe('failed');
+  });
+
+  // Value: protects=a corrupt stored attempt counter fails the item and alerts (keeping the provider's reason) instead of retrying forever or sticking in sending; fails_when=the arithmetic goes on, it throws, or the provider reason is dropped; why_new=attempts always came from newPendingState; seam=none; no_claim=wording of lastError
+  it('a stored attempt counter that is not a whole number fails the item and alerts', () => {
+    const sending = startDelivery(newPendingState(T0), T0);
+    for (const attempts of [Number.NaN, -1, 1.5, '2', undefined]) {
+      const corrupt = { ...sending, attempts } as unknown as DeliveryState;
+      const outcome = markFailedAttempt(corrupt, T0, new RetryableError('x'));
+      expect(outcome.state, String(attempts)).toMatchObject({
+        status: 'failed',
+        attempts: MAX_ATTEMPTS,
+      });
+      expect(outcome.alertTherapist, String(attempts)).toBe(true);
+      // The sweep goes through the same path, so a stuck corrupt item fails too.
+      const swept = sweepStale(corrupt, at(11));
+      expect(swept.state, String(attempts)).toMatchObject({
+        status: 'failed',
+        attempts: MAX_ATTEMPTS,
+      });
+      expect(swept.alertTherapist, String(attempts)).toBe(true);
+      // A corrupt item still in sending can neither start again nor be retried by hand.
+      expect(() => startDelivery(corrupt, at(60))).toThrow(InvalidTransitionError);
+      expect(() => resetForManualRetry(corrupt, at(60))).toThrow(InvalidTransitionError);
+      // The provider accepting it still means sent.
+      expect(markSent(corrupt, at(1), 'm-1')).toMatchObject({
+        status: 'sent',
+        providerMessageId: 'm-1',
+        sentAt: at(1).toISOString(),
+      });
+      // The therapist's manual retry (T9) gives the failed item a fresh, valid counter, due now.
+      const retried = resetForManualRetry(outcome.state, at(60));
+      expect(retried).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: at(60).toISOString(),
+      });
+      expect(isDue(retried, at(60))).toBe(true);
+    }
+    // A permanent error on a corrupt item keeps the provider's reason for the therapist.
+    const corrupt = { ...sending, attempts: Number.NaN } as DeliveryState;
+    const permanent = markFailedAttempt(corrupt, T0, new PermanentError('mailbox does not exist'));
+    expect(permanent.state).toMatchObject({ status: 'failed', attempts: MAX_ATTEMPTS });
+    expect(permanent.alertTherapist).toBe(true);
+    expect(permanent.state.lastError).toContain('mailbox does not exist');
+    const long = markFailedAttempt(corrupt, T0, new RetryableError('y'.repeat(MAX_ERROR_LENGTH)));
+    expect(long.state.lastError).toHaveLength(MAX_ERROR_LENGTH);
+  });
+
+  // Value: protects=the back-off lookup refuses a count that is not a whole number from 1 instead of returning a zero delay; fails_when=the guard is dropped or the clamp changes; why_new=only reachable through valid counters in markFailedAttempt; seam=none; no_claim=none beyond protects
+  it('back-off takes a whole number of failed attempts from 1 and stays at the last step', () => {
+    for (const bad of [0, -1, 1.5, Number.NaN]) {
+      expect(() => backoffMinutes(bad), String(bad)).toThrow(RangeError);
+    }
+    expect(backoffMinutes(1)).toBe(BACKOFF_MINUTES[0]);
+    expect(backoffMinutes(MAX_ATTEMPTS + 3)).toBe(BACKOFF_MINUTES.at(-1));
+  });
+
+  // Value: protects=a failed or retried item never shows a send that did not happen (no provider id, no sent time), on both the normal and the corrupt-counter path; fails_when=markFailedAttempt or the sweep carries a stale id or sentAt; why_new=specs never seeded send fields on a sending item; seam=none; no_claim=how corrupt data got them
+  it('only a successful send stores a provider id and a sent time', () => {
+    const stale = {
+      ...startDelivery(newPendingState(T0), T0),
+      providerMessageId: 'old',
+      sentAt: T0.toISOString(),
+    };
+    const corrupt = { ...stale, attempts: Number.NaN } as DeliveryState;
+    for (const item of [stale, corrupt]) {
+      for (const outcome of [
+        markFailedAttempt(item, at(1), new RetryableError('x')),
+        markFailedAttempt(item, at(1), new PermanentError('x')),
+        sweepStale(item, at(11)),
+      ]) {
+        expect(outcome.state, String(item.attempts)).not.toHaveProperty('providerMessageId');
+        expect(outcome.state, String(item.attempts)).not.toHaveProperty('sentAt');
+      }
+      expect(markSent(item, at(1), 'new')).toMatchObject({
+        providerMessageId: 'new',
+        sentAt: at(1).toISOString(),
+      });
+    }
+  });
+
+  // Value: protects=a message the provider accepted is recorded as sent even without an id, so the sweep never re-sends it, and no empty id is stored; fails_when=markSent throws or stores ''; why_new=specs always pass an id; seam=none; no_claim=id format per provider
+  it('marks a notification sent without storing an empty provider message id', () => {
+    const sending = startDelivery(newPendingState(T0), T0);
+    const sent = markSent(sending, at(1), '');
+    expect(sent).toMatchObject({ status: 'sent', sentAt: at(1).toISOString() });
+    expect(sent).not.toHaveProperty('providerMessageId');
+    expect(isStale(sent, at(60))).toBe(false);
+    // A provider id left on the item by corrupt data is not carried into the sent state.
+    const stale = { ...sending, providerMessageId: 'old' };
+    expect(markSent(stale, at(1), '')).not.toHaveProperty('providerMessageId');
+    // A missing or blank id identifies no send, so it is not stored either.
+    expect(markSent(sending, at(1))).not.toHaveProperty('providerMessageId');
+    expect(markSent(sending, at(1), '   ')).not.toHaveProperty('providerMessageId');
+  });
+
   it('transitions never mutate their input', () => {
     const pending = Object.freeze(newPendingState(T0));
     const sending = Object.freeze(startDelivery(pending, T0));
     expect(() => markSent(sending, T0, 'm')).not.toThrow();
     expect(() => markFailedAttempt(sending, T0, new RetryableError('x'))).not.toThrow();
+    expect(() => sweepStale(sending, at(11))).not.toThrow();
+    const failed = Object.freeze(failOnce(pending, T0, new PermanentError('no')).state);
+    expect(() => resetForManualRetry(failed, at(60))).not.toThrow();
     expect(pending.status).toBe('pending');
     expect(sending.status).toBe('sending');
+    expect(failed.status).toBe('failed');
   });
 });

@@ -28,13 +28,15 @@
 
 ### Notifier edge cases from the WP0.2 review
 
-**What:** Handle four cases when the notifier applies the delivery state machine:
+**What:** Handle these cases when the notifier applies the delivery state machine:
 - Do not raise `alertTherapist` for the therapist's own FAIL, alert or DIGEST notifications, so a broken SES account does not loop; rely on the failed-notifications alarm instead.
 - Make template-render errors and SES rejections such as `MessageRejected` permanent (`PermanentError`), with one channel spec per SES error name; `classifyError` treats anything unknown as retryable.
 - Parse stored `nextAttemptAt` and `updatedAt` through `IsoDateTimeSchema` at the repository boundary; a malformed value makes `isDue`/`isStale` false forever and the item sticks silently.
-- When a transition drops `lastError` (`markSent`), the repository must `REMOVE` the attribute; an `UpdateItem SET` of the returned fields leaves the old error on a sent item.
+- When a transition drops an attribute (`lastError` in `markSent`; `providerMessageId` and `sentAt` in `markFailedAttempt` and `sweepStale`; `providerMessageId` when `markSent` gets no usable id), the repository must `REMOVE` every attribute absent from the returned state; an `UpdateItem SET` of the returned fields leaves the old value in DynamoDB. Cover it with an API spec on DynamoDB Local (a stale id on a sending item, a retryable failure, then no `providerMessageId` stored).
 - Redact or classify provider error text before it reaches `markFailedAttempt` (the domain only caps it at 500 characters): SES and SDK messages can carry recipient addresses, request ids or ARNs, and `lastError` is stored and shown on the dashboard. Log the full message instead.
 - A manual retry (T9) of a failure older than about a month leaves the item in its creation-month partition, which deliver-due no longer queries (§6.3), so it never sends and never alerts. Re-home the item to the current month in the retry use case, or refuse the retry with an error code.
+- `sweepStale` throws `InvalidTransitionError` for an item that is not stale by its own clock reading (the DynamoDB filter `updatedAt < :stale` and the domain's `now` can disagree at the boundary). Catch it per item in the jobs handler so one item cannot abort the sweep, and keep the notifier Lambda timeout plus SES SDK retries well under `SENDING_STALE_AFTER_MINUTES` (an infra assertion), or the sweep re-queues a send that is still running and the email goes out twice.
+- Channel adapters pass `markSent` a provider id that is a string or `undefined`, never invented and never another type: `markSent` runs after the provider accepted, and a non-string would make its `.trim()` throw, leaving the item in `sending` for the sweep to send again. Add a `typeof` guard in `markSent` (and store the trimmed id) when the adapter lands, with a spec that passes a non-string id.
 - A confirmation or reminder still in back-off can go out after the booking or slot was cancelled. Give items an expiry or a superseded check so `startDelivery` callers skip obsolete messages; cover it with a journey (cancel while CONF is in back-off: exactly one CANC, no later CONF).
 
 **Why:** Each one is correct in the pure domain but fails at the integration boundary, where nothing in WP0.2 can test it.
@@ -70,6 +72,65 @@
 **Effort:** S
 **Priority:** P2
 **Depends on:** WP0.4 (OpenAPI generation).
+
+### Map domain time errors to `validation_failed`
+
+**What:** In the API error mapper, turn `NonexistentLocalTimeError`, `InvalidTimeZoneError` and the `RangeError`s of the time helpers into `validation_failed` (400) with the offending path, and cover it with an endpoint spec (a rule that starts at 02:30 on 2027-03-28).
+
+**Why:** `SlotIdSchema` now refuses a slot id inside the DST gap, but other inputs (rule start times, date ranges) reach `localDateTimeToUtc` as separate date and time fields. Unmapped, the throw becomes a 500.
+
+Make `SlotIdSchema` fail validation rather than throw: `SlotId.startExists` rethrows anything that is not `NonexistentLocalTimeError` (an `InvalidTimeZoneError` on a runtime without full ICU time-zone data), and a throw inside a Zod `refine` escapes `safeParse` as a 500. Either catch in the refine or check at startup that Europe/Rome resolves. Make `startExists` return `false` for a malformed id instead of throwing, or keep it off the public `SlotId` object.
+
+Recognise the domain errors by name or a shared brand as well as `instanceof`: two copies of `@fisio/domain` in one bundle make `instanceof` fail and turn a 400 into a 500. `classifyError` already does this for `PermanentError`; use one helper for every exported error.
+
+**Context:** WP0.2 follow-up 26. The slot-id half is fixed in `SlotIdSchema` and `SlotId.format`; the mapper does not exist before WP0.4.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.4.
+
+### Bounds for date ranges and the booking horizon
+
+**What:** Decide where range limits live: a maximum span for `from`/`to` query pairs (calendar views, the therapist's slot list), a booking horizon (how far ahead a client may book), and `from <= to`. Put the shared limits in `packages/contracts` next to `IsoDateSchema`, and the business ones (horizon) in the domain.
+
+**Why:** `IsoDateSchema` accepts any real date from 1900 to 9999, so a request for a 8,000-year range is valid today and would make the API generate or query millions of days.
+
+**Context:** WP0.2 follow-up 14 (adversarial review). Nothing reads a range before WP0.4/WP1.x.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.4.
+
+### Time edges and zones from the WP0.2 follow-up review
+
+**What:** Three edges in `packages/domain/src/time.ts` and `notification-state.ts`, none reachable today:
+- The year range does not line up across zones: `localDateTimeToUtc('1900-01-01', '00:30')` gives `1899-12-31T23:30Z`, which `IsoDateTimeSchema` refuses, and `localDateOf` of `9999-12-31T23:30Z` is `10000-01-01`. Narrow the supported dates (for example 1900-01-02 to 9999-12-30) or derive the instant bounds from the local ones.
+- `requireTimeZone` caches each raw spelling (`europe/rome`, `EUROPE/ROME`) without a bound and accepts fixed offsets such as `+01:00`, which ignore summer time. Cache the resolved canonical name, and decide whether fixed-offset zones are refused, before a zone ever comes from a request or the database.
+- Zones with sub-minute offsets after 1900 (for example `Africa/Monrovia` in 1950, −00:44:30) get a silently wrong instant from `localDateTimeToUtc`: the round-trip check reads through the same tz engine and accepts it. Restrict the zone to whole-minute zones (or Rome only), or check the round-trip against `Intl` directly. The `MIN_YEAR` comment holds for Rome only.
+- `FixedClock`'s offset check looks only at the end of the string, so V8's legacy formats such as `'March 28 2027 09:00 +01:00'` pass. They are host-independent, but if specs should use canonical ISO only, anchor the whole pattern.
+- `classifyError` treats anything named `PermanentError` as permanent and does not look at `cause`. Settle in the WP0.6 adapter contract which wrappers may set that name, and whether a wrapped `PermanentError` cause counts.
+
+**Why:** Each is correct for today's only caller (the fixed Europe/Rome zone, no adapters yet) but turns into a 500, unbounded memory or wrong retries once later work packages feed it other input.
+
+**Context:** Claude adversarial review in the `/ship` of the WP0.2 follow-up PR.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.4 (zone or date input from requests), WP0.6 (channel adapters).
+
+## Auth
+
+### Email case and id format across Cognito and the auth emulator
+
+**What:** Make sure every path that stores or compares an email uses `EmailSchema` (trimmed, lower-cased): sign-up, the therapist's client invite, Cognito `username`/`email` attributes, and the emulator. Check that the emulator issues `sub` values that `ClientIdSchema` (`z.uuid()`) accepts, the same version Cognito uses.
+
+**Why:** Cognito treats email aliases case-insensitively only when the pool is configured so; if one path lower-cases and another does not, one person can end up with two clients, or fail to sign in. An emulator `sub` that is not a valid UUID would make local specs pass on ids production never sees, or fail on ids it does.
+
+**Context:** WP0.2 follow-up 16 (adversarial review). `EmailSchema` and `ClientIdSchema` are in `packages/contracts/src/schemas.ts`.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** The Cognito and auth-emulator work packages.
 
 ## Web app
 
@@ -112,6 +173,18 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Effort:** S
 **Priority:** P1
 **Depends on:** WP0.10 (first AWS credentials on the machine).
+
+### Shared packages that run under plain Node
+
+**What:** Decide how `@fisio/domain` and `@fisio/contracts` are consumed outside Vite, Vitest and esbuild: either keep them source-only and require every runner (Lambda bundles, `tools/*` scripts, `pnpm tick`) to bundle or use a TypeScript loader, or add a build step with `exports` pointing at emitted `.js`. Cover the chosen path with the WP0.9 bundle smoke and one `tools` script run under plain `node`.
+
+**Why:** The packages export raw `.ts` with extensionless relative imports (`./time`), and they use TypeScript constructor parameter properties (`readonly date` in `NonexistentLocalTimeError`, `InvalidTimeZoneError`, `InvalidSlotIdError`). Node's type stripping rejects both: extensionless specifiers do not resolve, and parameter properties fail with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, so a loader that only adds extensions is not enough (consider `erasableSyntaxOnly`).
+
+**Context:** WP0.2 follow-up 15 (adversarial review). Bundled Lambdas are unaffected; scripts run directly are not.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (bundle smoke), or the first `tools` script that imports a package.
 
 ### Separate AWS accounts for dev and prod
 

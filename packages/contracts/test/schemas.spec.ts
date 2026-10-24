@@ -28,7 +28,7 @@ describe('Zod base schemas', () => {
   });
 
   it('phone numbers are E.164: + then 7 to 15 digits, no leading zero', () => {
-    for (const valid of ['+393331234567', '+41791234567', '+1234567']) {
+    for (const valid of ['+393331234567', '+41791234567', '+1234567', '+123456789012345']) {
       expect(ok(PhoneE164Schema, valid)).toBe(true);
     }
     for (const invalid of [
@@ -51,11 +51,17 @@ describe('Zod base schemas', () => {
     expect(ok(EmailSchema, '')).toBe(false);
   });
 
-  it('IsoDate accepts only real yyyy-mm-dd dates', () => {
+  // Value: protects=a request date outside 1900-9999 is refused at the schema, before the tz math; fails_when=IsoDateSchema swaps isIsoDate for a format-only check such as z.iso.date(); why_new=the rows above check calendar validity only; seam=none; no_claim=none beyond protects
+  it('IsoDate accepts only real yyyy-mm-dd dates in the supported years (1900–9999)', () => {
     expect(ok(IsoDateSchema, '2028-02-29')).toBe(true);
     expect(ok(IsoDateSchema, '2027-02-29')).toBe(false);
     expect(ok(IsoDateSchema, '2027-13-01')).toBe(false);
     expect(ok(IsoDateSchema, '2027-03-28T00:00:00Z')).toBe(false);
+    // Supported years only (MIN_YEAR-MAX_YEAR).
+    expect(ok(IsoDateSchema, '1900-01-01')).toBe(true);
+    expect(ok(IsoDateSchema, '9999-12-31')).toBe(true);
+    expect(ok(IsoDateSchema, '1899-12-31')).toBe(false);
+    expect(ok(IsoDateSchema, '0050-06-15')).toBe(false);
   });
 
   it('LocalTime accepts HH:mm from 00:00 to 23:59', () => {
@@ -68,12 +74,17 @@ describe('Zod base schemas', () => {
   it('IsoDateTime accepts only the canonical UTC form that toISOString produces', () => {
     expect(ok(IsoDateTimeSchema, '2027-03-28T07:00:00.000Z')).toBe(true);
     expect(ok(IsoDateTimeSchema, new Date('2027-10-31T08:00:00Z').toISOString())).toBe(true);
+    // The first instant of the supported years.
+    expect(ok(IsoDateTimeSchema, '1900-01-01T00:00:00.000Z')).toBe(true);
     for (const invalid of [
       '2027-03-28T07:00:00Z',
       '2027-03-28T07:00:00.123456Z',
       '2027-03-28T07:00Z',
       '2027-03-28T09:00:00.000+02:00',
       '2027-03-28',
+      // Years IsoDateSchema refuses: below 1900.
+      '0050-03-28T07:00:00.000Z',
+      '1899-12-31T23:59:59.999Z',
     ]) {
       expect(ok(IsoDateTimeSchema, invalid), invalid).toBe(false);
     }
@@ -102,6 +113,8 @@ describe('Zod base schemas', () => {
     expectTypeOf(parsed).toEqualTypeOf<SlotId>();
     expect(ok(SlotIdSchema, '2027-02-30T09:00#pool')).toBe(false);
     expect(ok(SlotIdSchema, '2027-03-28T09:00#gym')).toBe(false);
+    // A start inside the spring-forward gap does not exist in Rome.
+    expect(ok(SlotIdSchema, '2027-03-28T02:30#pool')).toBe(false);
     expect(ok(SlotIdSchema, 7)).toBe(false);
   });
 });

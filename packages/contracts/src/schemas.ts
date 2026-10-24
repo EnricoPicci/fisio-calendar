@@ -23,22 +23,30 @@ export const PhoneE164Schema = z
 /** Trimmed and lower-cased before validation, so one mailbox is one client. */
 export const EmailSchema = z.string().trim().toLowerCase().pipe(z.email());
 
-/** A local calendar date, `yyyy-mm-dd`, that exists. */
-export const IsoDateSchema = z.string().refine(isIsoDate, 'Expected a real date as yyyy-mm-dd');
+/** A local calendar date, `yyyy-mm-dd`, that exists, in years 1900–9999 (`MIN_YEAR`–`MAX_YEAR`). */
+export const IsoDateSchema = z
+  .string()
+  .refine(isIsoDate, 'Expected a real date as yyyy-mm-dd in a supported year');
 
 /** A local wall-clock time, `HH:mm`, from 00:00 to 23:59. */
 export const LocalTimeSchema = z.string().refine(isLocalTime, 'Expected a time as HH:mm');
 
 /**
  * A UTC instant in the canonical `Date.toISOString()` form: `yyyy-mm-ddTHH:mm:ss.sssZ`, exactly
- * three fraction digits. Instants are stored and compared as strings in DynamoDB, and only one
- * fixed-width form sorts the same way as time.
+ * three fraction digits, with a date that `IsoDateSchema` accepts. Instants are stored and
+ * compared as strings in DynamoDB, and only one fixed-width form sorts the same way as time.
  */
-export const IsoDateTimeSchema = z.iso.datetime({ precision: 3 });
+export const IsoDateTimeSchema = z.iso
+  .datetime({ precision: 3 })
+  .refine((value) => isIsoDate(value.slice(0, 10)), 'Expected a real date in a supported year');
 
 export const SlotTypeSchema = z.enum(SLOT_TYPES);
 
+/** A slot id from a request: well formed, and its start exists in Rome (not in a DST gap). */
 export const SlotIdSchema = z
   .string()
-  .refine(SlotId.is, 'Expected a slot id such as 2027-03-28T09:00#pool')
+  .refine(
+    (value) => SlotId.is(value) && SlotId.startExists(value),
+    'Expected a slot id such as 2027-03-28T09:00#pool, with a start that exists in Europe/Rome',
+  )
   .transform((value) => value as SlotId);

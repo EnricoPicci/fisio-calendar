@@ -365,11 +365,11 @@ The conditions inside the transaction are the source of truth *(decisions 10A, 1
 4. Write the marker last. Invoke `notifier` asynchronously.
 5. A CloudWatch alarm fires if the marker is still absent 60 minutes after `reminderTime`.
 
-The same tick also runs: **extend-horizon** once a day (03:00 local, idempotent, enforcing the no-overlap invariant), **digest** at `digestTime` (default 07:30; marker `JOB#digest#<date>`; one `DIGEST#<date>#email` notification to the therapist), **deliver-due** (all `pending` items whose `nextAttemptAt ≤ now`) and **sweep** (items in `sending` for more than 10 minutes go back to `pending` with `attempts + 1`).
+The same tick also runs: **extend-horizon** once a day (03:00 local, idempotent, enforcing the no-overlap invariant), **digest** at `digestTime` (default 07:30; marker `JOB#digest#<date>`; one `DIGEST#<date>#email` notification to the therapist), **deliver-due** (all `pending` items whose `nextAttemptAt ≤ now`) and **sweep** (an item in `sending` for more than 10 minutes counts as a failed attempt: back to `pending` with `attempts + 1`, or `failed` at the attempt limit or when the stored counter is corrupt).
 
 ### 5.4 Notification pipeline (transactional outbox, explicit state machine)
 
-A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channel, to, template, params, status, attempts, nextAttemptAt, lastError, providerMessageId, createdAt, sentAt, ttl}`. It is written **in the same transaction** as the business change → never lost, never sent for a rolled-back change. Keys are **deterministic** (§6.2), so every write is idempotent and a booking can have at most one confirmation and one cancellation.
+A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channel, to, template, params, status, attempts, nextAttemptAt, updatedAt, lastError?, providerMessageId?, createdAt, sentAt?, ttl}`. It is written **in the same transaction** as the business change → never lost, never sent for a rolled-back change. Keys are **deterministic** (§6.2), so every write is idempotent and a booking can have at most one confirmation and one cancellation.
 
 **State machine** *(decision 12A)*, implemented as pure functions in `packages/domain/src/notification-state.ts`:
 
@@ -377,18 +377,20 @@ A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channe
                  deliver (conditional update, only from pending with nextAttemptAt <= now)
    +---------+ ------------------------------------------------>  +---------+
    | pending |                                                    | sending |
-   +---------+ <-----------------------------------------------   +---------+
-      ^   |      retryable error: attempts+1,                        |   |
-      |   |      nextAttemptAt = now + backoff(attempts)             |   |
-      |   |      (1, 5, 30, 120 min); attempts >= 5 -> failed        |   | provider accepted
-      |   |                                                          |   v
-      |   |      sweep: sending older than 10 min -> pending       +--------+
-      |   +------------------------------------------------------> | sent   |
-      |                                                            +--------+
-      |          permanent error (bad address, template error)
-      |          or attempts >= 5                                  +--------+
-      +----------------------------------------------------------> | failed | --> therapist alert, dashboard, manual retry (T9 resets to pending)
-                                                                   +--------+
+   +---------+ <------------------------------------------------  +---------+
+      ^          retryable error, or sweep (sending for more         |   |
+      |          than 10 min counts as a failed attempt):            |   | provider accepted
+      |          attempts+1, nextAttemptAt = now + backoff           |   v
+      |          (1, 5, 30, 120 min)                                 |  +--------+
+      |                                                              |  | sent   |
+      |                                      permanent error (bad    |  +--------+
+      |                                      address, template       |
+      |                                      error) or attempts      |
+      |                                      reach 5 (or the stored  |
+      |                                      counter is corrupt)     v
+      |   manual retry (T9): attempts = 0                       +--------+
+      +-------------------------------------------------------- | failed | --> therapist alert, dashboard
+                                                                +--------+
 ```
 
 **Delivery triggers** *(decision T2 — no DynamoDB Streams)*:
@@ -404,9 +406,11 @@ Why not Streams: the outbox item plus deterministic keys already give the guaran
 ```ts
 interface NotificationChannel {
   readonly name: 'email' | 'whatsapp';
-  send(msg: RenderedMessage): Promise<{ providerMessageId: string }>;   // throws RetryableError | PermanentError
+  send(msg: RenderedMessage): Promise<{ providerMessageId?: string }>;  // throws RetryableError | PermanentError
 }
 ```
+
+A provider that accepts a message without returning an id still means sent: `markSent` records it without `providerMessageId`, and only a successful send stores one. An adapter never invents an id: it is kept to trace a message in SES logs and events, while bounce and complaint handling matches the recipient (SES feedback below).
 
 `SesEmailChannel` (AWS SDK v3 `SendEmail`, cloud runtime), `SmtpEmailChannel` (nodemailer → Mailpit, local runtime), `FakeChannel` (records calls; used by every spec). A `WhatsAppChannel` is the planned later addition. Templates live in `packages/contracts` as typed render functions, so a spec can assert "client receives a reminder for pool at 17:00" against rendered text.
 
@@ -414,7 +418,7 @@ interface NotificationChannel {
 
 ### 5.5 Time handling
 
-`date-fns` v4 with `@date-fns/tz`. All slot generation iterates **local** wall-clock times in `Europe/Rome` and converts to UTC for storage, so a 09:00 slot is 09:00 on both sides of a DST switch. Specs cover the two DST Sundays explicitly (S1). A `Clock` abstraction is injected everywhere so specs run at a fixed instant.
+`date-fns` v4 with `@date-fns/tz`. All slot generation iterates **local** wall-clock times in `Europe/Rome` and converts to UTC for storage, so a 09:00 slot is 09:00 on both sides of a DST switch. Specs cover the two DST Sundays explicitly (S1). A local time inside the spring-forward gap does not exist and is refused (so is a slot id that names one); a time in the repeated fall-back hour means its first occurrence. The conversion never reads the host's time zone, so a laptop in Rome and a Lambda in UTC agree. A `Clock` abstraction is injected everywhere so specs run at a fixed instant.
 
 ---
 
@@ -688,7 +692,7 @@ Definition of done for a milestone: its rows are green. Layer: D = domain, A = A
 | S3 | retryable error → pending with nextAttemptAt per back-off table; attempts incremented | D, A |
 | S3 | permanent error → failed + therapist alert notification | D, A |
 | S3 | attempts ≥ 5 → failed | D |
-| S3 | sweep resets `sending` older than 10 min to pending | A |
+| S3 | sweep counts `sending` older than 10 min as a failed attempt | D, A |
 | S3 | deliver-due picks items whose nextAttemptAt elapsed; ignores others | A |
 | S3 | async invoke after commit delivers immediately (in-process locally) | A |
 | S3 | duplicate async invocations deliver once (conditional pending → sending) | A |
