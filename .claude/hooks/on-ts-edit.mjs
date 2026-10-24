@@ -1,16 +1,20 @@
 #!/usr/bin/env node
-// Claude Code PostToolUse hook (Edit|Write). After a .ts/.tsx file is written:
+// Claude Code PostToolUse hook (Edit|Write|MultiEdit). After a .ts/.tsx file is written:
 //   1. `biome check --write <file>` — format + safe lint fixes;
 //   2. typecheck the workspace package that owns the file (its `typecheck` script, run with
-//      node_modules/.bin on PATH — no pnpm needed).
-// Silent when everything passes. Remaining Biome diagnostics and type errors are returned to
-// Claude as additional context, so they surface immediately instead of in a later test run.
+//      node_modules/.bin on PATH — no pnpm needed). A file that belongs to no package is checked
+//      by the root tsconfig only if that tsconfig includes it; otherwise it is reported as
+//      unchecked rather than passed silently.
+// Silent when everything passes. Remaining Biome diagnostics, type errors and timeouts are
+// returned to Claude as additional context, so they surface immediately instead of in a later
+// test run. Each step has its own timeout inside the hook's 90 s budget (.claude/settings.json).
 // See docs/tooling-and-skills.md §2.3.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
 const MAX_LINES = 60;
+const STEP_TIMEOUT_MS = 40_000;
 
 const input = readStdinJson();
 const filePath = input?.tool_input?.file_path;
@@ -18,16 +22,16 @@ if (typeof filePath !== 'string' || !/\.(?:ts|tsx|mts|cts)$/.test(filePath)) pro
 
 const root = resolve(process.env.CLAUDE_PROJECT_DIR ?? process.cwd());
 const file = resolve(root, filePath);
-if (!file.startsWith(root + sep) || !existsSync(file)) process.exit(0);
+if (!isInsideRoot(file) || !existsSync(file)) process.exit(0);
 const rel = relative(root, file);
+if (rel.split(sep).includes('node_modules')) process.exit(0);
 
 const problems = [];
 
 // 1. Biome on the edited file.
 const biome = join(root, 'node_modules', '.bin', 'biome');
 if (existsSync(biome)) {
-  const r = spawnSync(biome, ['check', '--write', file], { cwd: root, encoding: 'utf8' });
-  if (r.status !== 0) problems.push(`biome check ${rel}\n${trim(`${r.stdout}${r.stderr}`)}`);
+  report(`biome check ${rel}`, run(biome, ['check', '--write', file], { cwd: root }));
 }
 
 // 2. Typecheck the owning package (nearest package.json with a `typecheck` script).
@@ -35,14 +39,20 @@ const pkgDir = owningPackage(dirname(file));
 if (pkgDir === root) {
   const tsc = join(root, 'node_modules', '.bin', 'tsc');
   if (existsSync(tsc) && existsSync(join(root, 'tsconfig.json'))) {
-    const r = spawnSync(tsc, ['--noEmit', '-p', 'tsconfig.json'], { cwd: root, encoding: 'utf8' });
-    if (r.status !== 0) problems.push(`tsc (root)\n${trim(`${r.stdout}${r.stderr}`)}`);
+    const listed = run(tsc, ['-p', 'tsconfig.json', '--listFilesOnly'], { cwd: root });
+    if (
+      listed.status === 0 &&
+      !listed.stdout.split('\n').some((line) => resolve(root, line.trim()) === file)
+    ) {
+      problems.push(
+        `typecheck: ${rel} is not checked by any typecheck — it is outside every workspace package and not included by the root tsconfig.json. Move it into a package or add it to a tsconfig.`,
+      );
+    } else {
+      report('tsc (root)', run(tsc, ['--noEmit', '-p', 'tsconfig.json'], { cwd: root }));
+    }
   }
 } else if (pkgDir) {
-  const r = runPackageScript(pkgDir, 'typecheck');
-  if (r.status !== 0) {
-    problems.push(`typecheck ${relative(root, pkgDir)}\n${trim(`${r.stdout}${r.stderr}`)}`);
-  }
+  report(`typecheck ${relative(root, pkgDir)}`, runPackageScript(pkgDir, 'typecheck'));
 }
 
 if (problems.length > 0) {
@@ -63,9 +73,13 @@ function readStdinJson() {
   }
 }
 
+function isInsideRoot(path) {
+  return path === root || path.startsWith(root + sep);
+}
+
 function owningPackage(dir) {
   let current = dir;
-  while (current.startsWith(root)) {
+  while (isInsideRoot(current)) {
     const manifest = join(current, 'package.json');
     if (existsSync(manifest)) {
       if (current === root) return root;
@@ -84,14 +98,31 @@ function owningPackage(dir) {
 
 function runPackageScript(pkgDir, name) {
   // Same thing `pnpm run <name>` does, minus pnpm: the package's script with the package's and
-  // the workspace root's node_modules/.bin prepended to PATH.
+  // the workspace root's node_modules/.bin prepended to PATH. Deliberately pnpm-free: the hook
+  // must work before `corepack enable` has put pnpm on PATH.
   const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
   const bins = [join(pkgDir, 'node_modules', '.bin'), join(root, 'node_modules', '.bin')];
-  return spawnSync('sh', ['-c', pkg.scripts[name]], {
+  return run('sh', ['-c', pkg.scripts[name]], {
     cwd: pkgDir,
-    encoding: 'utf8',
     env: { ...process.env, PATH: `${bins.join(':')}:${process.env.PATH ?? ''}` },
   });
+}
+
+function run(command, args, options) {
+  return spawnSync(command, args, {
+    ...options,
+    encoding: 'utf8',
+    timeout: STEP_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
+  });
+}
+
+function report(label, result) {
+  if (result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL') {
+    problems.push(`${label}\ntimed out after ${STEP_TIMEOUT_MS / 1000} s; result unknown`);
+  } else if (result.status !== 0) {
+    problems.push(`${label}\n${trim(`${result.stdout ?? ''}${result.stderr ?? ''}`)}`);
+  }
 }
 
 function trim(text) {

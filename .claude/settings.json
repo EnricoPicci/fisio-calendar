@@ -7,8 +7,6 @@
       "Bash(pnpm typecheck*)",
       "Bash(pnpm lint*)",
       "Bash(pnpm -r build*)",
-      "Bash(pnpm -F * build*)",
-      "Bash(pnpm --filter * build*)",
       "Bash(pnpm local:up*)",
       "Bash(pnpm local:down*)",
       "Bash(pnpm tick*)",
@@ -21,14 +19,31 @@
       "Bash(git status*)",
       "Bash(git diff*)",
       "Bash(git log*)",
-      "Bash(git branch*)"
+      "Bash(git branch)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch -a)",
+      "Bash(git branch -vv)"
     ],
-    "ask": ["Bash(cdk deploy*)", "Bash(pnpm deploy:*)", "Bash(git push*)", "Bash(rm -rf*)"]
+    "ask": [
+      "Bash(pnpm deploy:*)",
+      "Bash(git push*)",
+      "Bash(rm -rf*)",
+      "Bash(git diff*--output*)",
+      "Bash(git log*--output*)",
+      "Bash(git diff*--ext-diff*)"
+    ],
+    "deny": [
+      "Bash(cdk deploy*)",
+      "Bash(npx cdk deploy*)",
+      "Bash(npx aws-cdk deploy*)",
+      "Bash(pnpm exec cdk deploy*)",
+      "Bash(pnpm dlx cdk deploy*)"
+    ]
   },
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Edit|Write",
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
@@ -46,7 +61,8 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-cdk-deploy.mjs",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }
