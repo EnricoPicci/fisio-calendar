@@ -31,10 +31,12 @@ export const LocalTimeSchema = z.string().refine(isLocalTime, 'Expected a time a
 
 /**
  * A UTC instant in the canonical `Date.toISOString()` form: `yyyy-mm-ddTHH:mm:ss.sssZ`, exactly
- * three fraction digits. Instants are stored and compared as strings in DynamoDB, and only one
- * fixed-width form sorts the same way as time.
+ * three fraction digits, with a date that `IsoDateSchema` accepts. Instants are stored and
+ * compared as strings in DynamoDB, and only one fixed-width form sorts the same way as time.
  */
-export const IsoDateTimeSchema = z.iso.datetime({ precision: 3 });
+export const IsoDateTimeSchema = z.iso
+  .datetime({ precision: 3 })
+  .refine((value) => isIsoDate(value.slice(0, 10)), 'Expected a real date in a supported year');
 
 export const SlotTypeSchema = z.enum(SLOT_TYPES);
 

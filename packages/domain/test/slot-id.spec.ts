@@ -64,6 +64,17 @@ describe('SlotId: identity of a slot (<date>T<HH:mm>#<type>)', () => {
     ).toThrow(InvalidSlotIdError);
   });
 
+  // Value: protects=a slot id names a start that exists in Rome, so the API answers validation_failed, not a 500; fails_when=a DST-gap start passes SlotId and later throws NonexistentLocalTimeError; why_new=format checks never asked the zone; seam=none; no_claim=the API error mapping (WP0.4)
+  it('rejects a start inside the spring-forward gap, which does not exist in Rome', () => {
+    expect(() => SlotId.of('2027-03-28T02:30#pool')).toThrow(InvalidSlotIdError);
+    expect(SlotId.is('2027-03-28T02:30#studio')).toBe(false);
+    expect(() => SlotId.format({ date: '2027-03-28', start: '02:00', type: 'pool' })).toThrow(
+      InvalidSlotIdError,
+    );
+    expect(SlotId.is('2027-03-28T03:00#pool')).toBe(true);
+    expect(SlotId.is('2027-10-31T02:30#pool')).toBe(true);
+  });
+
   it('the error names the rejected input', () => {
     let error: unknown;
     try {

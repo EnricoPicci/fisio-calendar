@@ -28,7 +28,7 @@ describe('Zod base schemas', () => {
   });
 
   it('phone numbers are E.164: + then 7 to 15 digits, no leading zero', () => {
-    for (const valid of ['+393331234567', '+41791234567', '+1234567']) {
+    for (const valid of ['+393331234567', '+41791234567', '+1234567', '+123456789012345']) {
       expect(ok(PhoneE164Schema, valid)).toBe(true);
     }
     for (const invalid of [
@@ -74,6 +74,10 @@ describe('Zod base schemas', () => {
       '2027-03-28T07:00Z',
       '2027-03-28T09:00:00.000+02:00',
       '2027-03-28',
+      // Years IsoDateSchema refuses: below 1900, and 0000–0099 that Date.UTC cannot express.
+      '0050-03-28T07:00:00.000Z',
+      '1899-12-31T23:00:00.000Z',
+      '2027-02-30T07:00:00.000Z',
     ]) {
       expect(ok(IsoDateTimeSchema, invalid), invalid).toBe(false);
     }
@@ -102,6 +106,8 @@ describe('Zod base schemas', () => {
     expectTypeOf(parsed).toEqualTypeOf<SlotId>();
     expect(ok(SlotIdSchema, '2027-02-30T09:00#pool')).toBe(false);
     expect(ok(SlotIdSchema, '2027-03-28T09:00#gym')).toBe(false);
+    // A start inside the spring-forward gap does not exist in Rome.
+    expect(ok(SlotIdSchema, '2027-03-28T02:30#pool')).toBe(false);
     expect(ok(SlotIdSchema, 7)).toBe(false);
   });
 });

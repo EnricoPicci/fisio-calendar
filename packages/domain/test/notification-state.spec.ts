@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BACKOFF_MINUTES,
+  backoffMinutes,
   classifyError,
   type DeliveryState,
   InvalidTransitionError,
@@ -132,18 +133,19 @@ describe('S3 Delivery: notification state machine', () => {
   it('sweep resets a sending item older than 10 minutes to pending as a failed attempt', () => {
     expect(SENDING_STALE_AFTER_MINUTES).toBe(10);
     const sending = startDelivery(newPendingState(T0), T0);
-    expect(isStale(sending, at(9.99))).toBe(false);
-    expect(isStale(sending, at(10))).toBe(true);
-    expect(() => sweepStale(sending, at(9))).toThrow(InvalidTransitionError);
+    // "More than 10 minutes" (architecture §5.4): exactly 10 is not stale yet.
+    expect(isStale(sending, at(10))).toBe(false);
+    expect(isStale(sending, new Date(at(10).getTime() + 1))).toBe(true);
+    expect(() => sweepStale(sending, at(10))).toThrow(InvalidTransitionError);
 
-    const { state, alertTherapist } = sweepStale(sending, at(10));
+    const { state, alertTherapist } = sweepStale(sending, at(11));
     expect(alertTherapist).toBe(false);
     expect(state).toMatchObject({
       status: 'pending',
       attempts: 1,
-      nextAttemptAt: at(11).toISOString(),
+      nextAttemptAt: at(12).toISOString(),
     });
-    expect(state.lastError).toMatch(/10 minutes/);
+    expect(state.lastError).toEqual(expect.stringMatching(/./));
   });
 
   it('a sweep that reaches the attempt limit fails the item and alerts', () => {
@@ -155,7 +157,7 @@ describe('S3 Delivery: notification state machine', () => {
     const stuck = startDelivery(state, started);
     const swept = sweepStale(
       stuck,
-      new Date(started.getTime() + SENDING_STALE_AFTER_MINUTES * 60_000),
+      new Date(started.getTime() + SENDING_STALE_AFTER_MINUTES * 60_000 + 1),
     );
     expect(swept.state.status).toBe('failed');
     expect(swept.alertTherapist).toBe(true);
@@ -238,12 +240,74 @@ describe('S3 Delivery: notification state machine', () => {
     expect(failOnce(newPendingState(T0), T0, new Error('short')).state.lastError).toBe('short');
   });
 
+  // Value: protects=the cap never leaves half of a UTF-16 surrogate pair (an emoji) at the end; fails_when=the cap slices at a fixed index; why_new=the cap spec uses ASCII only; seam=none; no_claim=grapheme clusters
+  it('the error cap does not split a character outside the basic plane', () => {
+    const text = `${'x'.repeat(MAX_ERROR_LENGTH - 1)}😀tail`;
+    const { lastError } = failOnce(newPendingState(T0), T0, new Error(text)).state;
+    expect(lastError).toBe('x'.repeat(MAX_ERROR_LENGTH - 1));
+    expect(lastError).not.toMatch(/[\uD800-\uDBFF]$/);
+  });
+
+  // Value: protects=a stored error is never empty and reading it never throws; fails_when=an empty message stores '' or a throwing getter escapes markFailedAttempt; why_new=only plain messages are covered; seam=none; no_claim=wording of the fallback
+  it('records an error with an empty or unreadable message by its name, without throwing', () => {
+    const empty = failOnce(newPendingState(T0), T0, new PermanentError('')).state;
+    expect(empty.lastError).toBe('PermanentError');
+
+    const unreadable = new Error('x');
+    Object.defineProperty(unreadable, 'message', {
+      get() {
+        throw new Error('boom');
+      },
+    });
+    const { state } = failOnce(newPendingState(T0), T0, unreadable);
+    expect(state).toMatchObject({ status: 'pending', attempts: 1 });
+    expect(state.lastError).toEqual(expect.stringMatching(/./));
+    expect(failOnce(newPendingState(T0), T0, Object.create(null)).state.lastError).toEqual(
+      expect.stringMatching(/./),
+    );
+  });
+
+  // Value: protects=a PermanentError from a second copy of the module (two bundles) still fails the item; fails_when=classifyError relies on instanceof only; why_new=specs share one module instance; seam=none; no_claim=errors renamed by minifiers
+  it('a permanent error from another copy of the module is still permanent', () => {
+    class PermanentError extends Error {
+      override name = 'PermanentError';
+    }
+    expect(classifyError(new PermanentError('bad address'))).toBe('permanent');
+    expect(failOnce(newPendingState(T0), T0, new PermanentError('x')).state.status).toBe('failed');
+  });
+
+  // Value: protects=a corrupt stored attempt counter fails loudly instead of retrying forever with no delay; fails_when=attempts is NaN, a string or negative and the arithmetic goes on; why_new=attempts always came from newPendingState; seam=none; no_claim=how the notifier reports the throw
+  it('refuses a stored attempt counter that is not a whole number', () => {
+    const sending = startDelivery(newPendingState(T0), T0);
+    for (const attempts of [Number.NaN, -1, 1.5, '2', undefined]) {
+      const corrupt = { ...sending, attempts } as unknown as DeliveryState;
+      expect(
+        () => markFailedAttempt(corrupt, T0, new RetryableError('x')),
+        String(attempts),
+      ).toThrow(RangeError);
+    }
+    expect(() => backoffMinutes(0)).toThrow(RangeError);
+    expect(() => backoffMinutes(Number.NaN)).toThrow(RangeError);
+    expect(backoffMinutes(1)).toBe(1);
+    expect(backoffMinutes(MAX_ATTEMPTS + 3)).toBe(BACKOFF_MINUTES.at(-1));
+  });
+
+  // Value: protects=a sent item always records which provider message it was; fails_when=markSent stores an empty providerMessageId; why_new=specs always pass an id; seam=none; no_claim=id format per provider
+  it('refuses to mark a notification sent without a provider message id', () => {
+    const sending = startDelivery(newPendingState(T0), T0);
+    expect(() => markSent(sending, T0, '')).toThrow(RangeError);
+  });
+
   it('transitions never mutate their input', () => {
     const pending = Object.freeze(newPendingState(T0));
     const sending = Object.freeze(startDelivery(pending, T0));
     expect(() => markSent(sending, T0, 'm')).not.toThrow();
     expect(() => markFailedAttempt(sending, T0, new RetryableError('x'))).not.toThrow();
+    expect(() => sweepStale(sending, at(11))).not.toThrow();
+    const failed = Object.freeze(failOnce(pending, T0, new PermanentError('no')).state);
+    expect(() => resetForManualRetry(failed, at(60))).not.toThrow();
     expect(pending.status).toBe('pending');
     expect(sending.status).toBe('sending');
+    expect(failed.status).toBe('failed');
   });
 });

@@ -377,18 +377,19 @@ A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channe
                  deliver (conditional update, only from pending with nextAttemptAt <= now)
    +---------+ ------------------------------------------------>  +---------+
    | pending |                                                    | sending |
-   +---------+ <-----------------------------------------------   +---------+
-      ^   |      retryable error: attempts+1,                        |   |
-      |   |      nextAttemptAt = now + backoff(attempts)             |   |
-      |   |      (1, 5, 30, 120 min); attempts >= 5 -> failed        |   | provider accepted
-      |   |                                                          |   v
-      |   |      sweep: sending older than 10 min -> pending       +--------+
-      |   +------------------------------------------------------> | sent   |
-      |                                                            +--------+
-      |          permanent error (bad address, template error)
-      |          or attempts >= 5                                  +--------+
-      +----------------------------------------------------------> | failed | --> therapist alert, dashboard, manual retry (T9 resets to pending)
-                                                                   +--------+
+   +---------+ <------------------------------------------------  +---------+
+      ^          retryable error, or sweep (sending for more         |   |
+      |          than 10 min counts as a failed attempt):            |   | provider accepted
+      |          attempts+1, nextAttemptAt = now + backoff           |   v
+      |          (1, 5, 30, 120 min)                                 |  +--------+
+      |                                                              |  | sent   |
+      |                                      permanent error (bad    |  +--------+
+      |                                      address, template       |
+      |                                      error) or attempts      |
+      |                                      reach 5                 v
+      |   manual retry (T9): attempts = 0                       +--------+
+      +-------------------------------------------------------- | failed | --> therapist alert, dashboard
+                                                                +--------+
 ```
 
 **Delivery triggers** *(decision T2 — no DynamoDB Streams)*:
@@ -414,7 +415,7 @@ interface NotificationChannel {
 
 ### 5.5 Time handling
 
-`date-fns` v4 with `@date-fns/tz`. All slot generation iterates **local** wall-clock times in `Europe/Rome` and converts to UTC for storage, so a 09:00 slot is 09:00 on both sides of a DST switch. Specs cover the two DST Sundays explicitly (S1). A `Clock` abstraction is injected everywhere so specs run at a fixed instant.
+`date-fns` v4 with `@date-fns/tz`. All slot generation iterates **local** wall-clock times in `Europe/Rome` and converts to UTC for storage, so a 09:00 slot is 09:00 on both sides of a DST switch. Specs cover the two DST Sundays explicitly (S1). A local time inside the spring-forward gap does not exist and is refused (so is a slot id that names one); a time in the repeated fall-back hour means its first occurrence. The conversion never reads the host's time zone, so a laptop in Rome and a Lambda in UTC agree. A `Clock` abstraction is injected everywhere so specs run at a fixed instant.
 
 ---
 

@@ -5,9 +5,9 @@
  * matching conditional update fails there.
  *
  *   pending --deliver (due)--> sending --provider accepted--> sent
- *   sending --retryable error, attempts < 5--> pending (nextAttemptAt = now + back-off)
- *   sending --permanent error, or attempts reach 5--> failed (alert the therapist)
- *   sending older than 10 min --sweep--> counted as a retryable failed attempt
+ *   sending --retryable error, attempts < MAX_ATTEMPTS--> pending (nextAttemptAt = now + back-off)
+ *   sending --permanent error, or attempts reach MAX_ATTEMPTS--> failed (alert the therapist)
+ *   sending for more than SENDING_STALE_AFTER_MINUTES --sweep--> a retryable failed attempt
  *   failed --manual retry (T9)--> pending
  *
  * Instants are stored as UTC ISO strings, matching the persisted NOTIFICATION item.
@@ -69,14 +69,22 @@ export class InvalidTransitionError extends Error {
 
 export type ErrorClass = 'retryable' | 'permanent';
 
-/** Only an explicit {@link PermanentError} is permanent; anything unknown is retried. */
+/**
+ * Only a {@link PermanentError} is permanent; anything unknown is retried. It is recognised by
+ * name as well, so an error from a second copy of this module (two bundles) still counts.
+ */
 export function classifyError(error: unknown): ErrorClass {
-  return error instanceof PermanentError ? 'permanent' : 'retryable';
+  return error instanceof PermanentError || nameOf(error) === 'PermanentError'
+    ? 'permanent'
+    : 'retryable';
 }
 
-/** Minutes to wait after `attempts` failed attempts (1-based). */
+/** Minutes to wait after `attempts` failed attempts (a whole number from 1). */
 export function backoffMinutes(attempts: number): number {
-  const index = Math.min(Math.max(attempts, 1), BACKOFF_MINUTES.length) - 1;
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new RangeError(`Failed attempts must be a whole number from 1, got ${String(attempts)}`);
+  }
+  const index = Math.min(attempts, BACKOFF_MINUTES.length) - 1;
   return BACKOFF_MINUTES[index] ?? 0;
 }
 
@@ -89,10 +97,11 @@ export function isDue(state: DeliveryState, now: Date): boolean {
   return state.status === 'pending' && Date.parse(state.nextAttemptAt) <= now.getTime();
 }
 
+/** A `sending` item last touched more than {@link SENDING_STALE_AFTER_MINUTES} ago. */
 export function isStale(state: DeliveryState, now: Date): boolean {
   return (
     state.status === 'sending' &&
-    now.getTime() - Date.parse(state.updatedAt) >= SENDING_STALE_AFTER_MINUTES * 60_000
+    now.getTime() - Date.parse(state.updatedAt) > SENDING_STALE_AFTER_MINUTES * MINUTE_MS
   );
 }
 
@@ -113,6 +122,7 @@ export function markSent(
   providerMessageId: string,
 ): DeliveryState {
   if (state.status !== 'sending') throw new InvalidTransitionError('mark sent', state.status);
+  if (!providerMessageId) throw new RangeError('A sent notification needs a providerMessageId');
   const { lastError: _dropped, ...rest } = state;
   const iso = now.toISOString();
   return { ...rest, status: 'sent', providerMessageId, sentAt: iso, updatedAt: iso };
@@ -123,26 +133,28 @@ export function markFailedAttempt(state: DeliveryState, now: Date, error: unknow
   if (state.status !== 'sending') {
     throw new InvalidTransitionError('record a failed attempt of', state.status);
   }
+  if (!Number.isInteger(state.attempts) || state.attempts < 0) {
+    throw new RangeError(`Stored attempts must be a whole number, got ${String(state.attempts)}`);
+  }
   const attempts = state.attempts + 1;
   const iso = now.toISOString();
-  const lastError = (error instanceof Error ? error.message : String(error)).slice(
-    0,
-    MAX_ERROR_LENGTH,
-  );
+  const lastError = capErrorText(describeError(error));
   if (classifyError(error) === 'permanent' || attempts >= MAX_ATTEMPTS) {
     return {
       state: { ...state, status: 'failed', attempts, lastError, updatedAt: iso },
       alertTherapist: true,
     };
   }
-  const nextAttemptAt = new Date(now.getTime() + backoffMinutes(attempts) * 60_000).toISOString();
+  const nextAttemptAt = new Date(
+    now.getTime() + backoffMinutes(attempts) * MINUTE_MS,
+  ).toISOString();
   return {
     state: { ...state, status: 'pending', attempts, lastError, nextAttemptAt, updatedAt: iso },
     alertTherapist: false,
   };
 }
 
-/** A `sending` item stuck for 10 minutes (the notifier died mid-send) counts as a failed attempt. */
+/** A stale `sending` item (the notifier died mid-send) counts as a retryable failed attempt. */
 export function sweepStale(state: DeliveryState, now: Date): FailureOutcome {
   if (!isStale(state, now)) {
     throw new InvalidTransitionError(
@@ -163,4 +175,34 @@ export function resetForManualRetry(state: DeliveryState, now: Date): DeliverySt
   if (state.status !== 'failed') throw new InvalidTransitionError('retry', state.status);
   const iso = now.toISOString();
   return { ...state, status: 'pending', attempts: 0, nextAttemptAt: iso, updatedAt: iso };
+}
+
+const MINUTE_MS = 60_000;
+
+/** The error's message, else its name, else its string form; never throws. */
+function describeError(error: unknown): string {
+  try {
+    if (error instanceof Error) return error.message || error.name || 'Error';
+    return String(error) || 'unknown error';
+  } catch {
+    return 'unreadable error';
+  }
+}
+
+/** At most {@link MAX_ERROR_LENGTH} UTF-16 units, without splitting a surrogate pair. */
+function capErrorText(text: string): string {
+  if (text.length <= MAX_ERROR_LENGTH) return text;
+  const last = text.charCodeAt(MAX_ERROR_LENGTH - 1);
+  const splitsPair = last >= 0xd800 && last <= 0xdbff;
+  return text.slice(0, splitsPair ? MAX_ERROR_LENGTH - 1 : MAX_ERROR_LENGTH);
+}
+
+function nameOf(error: unknown): unknown {
+  try {
+    return typeof error === 'object' && error !== null
+      ? (error as { name?: unknown }).name
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

@@ -1,9 +1,15 @@
-import { isIsoDate, isLocalTime } from './time';
+import {
+  isIsoDate,
+  isLocalTime,
+  localDateTimeToUtc,
+  NonexistentLocalTimeError,
+  THERAPIST_TIME_ZONE,
+} from './time';
 
 /**
  * Slot identity (docs/architecture.md §3.2, §5.1, decision 14A): `<date>T<HH:mm>#<type>`,
  * e.g. `2027-03-28T09:00#pool`. Unique within the therapist; date and start are local
- * (Europe/Rome) wall-clock values. This module is the only place that builds or reads one;
+ * (Europe/Rome) wall-clock values, and the start must exist there (not in a DST gap). This module is the only place that builds or reads one;
  * repository keys derive from it. Ids of one type sort chronologically as plain strings.
  */
 export const SLOT_TYPES = ['studio', 'pool'] as const;
@@ -42,6 +48,12 @@ function check(input: string, parts: SlotIdParts): void {
   if (!isLocalTime(parts.start)) throw new InvalidSlotIdError(input, 'start is not HH:mm');
   if (!isSlotType(parts.type)) {
     throw new InvalidSlotIdError(input, `type must be one of ${SLOT_TYPES.join(', ')}`);
+  }
+  try {
+    localDateTimeToUtc(parts.date, parts.start, THERAPIST_TIME_ZONE);
+  } catch (error) {
+    if (!(error instanceof NonexistentLocalTimeError)) throw error;
+    throw new InvalidSlotIdError(input, `start does not exist in ${THERAPIST_TIME_ZONE}`);
   }
 }
 

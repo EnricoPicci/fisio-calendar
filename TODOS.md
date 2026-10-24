@@ -71,6 +71,44 @@
 **Priority:** P2
 **Depends on:** WP0.4 (OpenAPI generation).
 
+### Map domain time errors to `validation_failed`
+
+**What:** In the API error mapper, turn `NonexistentLocalTimeError`, `InvalidTimeZoneError` and the `RangeError`s of the time helpers into `validation_failed` (400) with the offending path, and cover it with an endpoint spec (a rule that starts at 02:30 on 2027-03-28).
+
+**Why:** `SlotIdSchema` now refuses a slot id inside the DST gap, but other inputs (rule start times, date ranges) reach `localDateTimeToUtc` as separate date and time fields. Unmapped, the throw becomes a 500.
+
+**Context:** WP0.2 follow-up 26. The slot-id half is fixed in `packages/domain/src/slot-id.ts`; the mapper does not exist before WP0.4.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.4.
+
+### Bounds for date ranges and the booking horizon
+
+**What:** Decide where range limits live: a maximum span for `from`/`to` query pairs (calendar views, the therapist's slot list), a booking horizon (how far ahead a client may book), and `from <= to`. Put the shared limits in `packages/contracts` next to `IsoDateSchema`, and the business ones (horizon) in the domain.
+
+**Why:** `IsoDateSchema` accepts any real date from 1900 to 9999, so a request for a 8,000-year range is valid today and would make the API generate or query millions of days.
+
+**Context:** WP0.2 follow-up 14 (adversarial review). Nothing reads a range before WP0.4/WP1.x.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.4.
+
+## Auth
+
+### Email case and id format across Cognito and the auth emulator
+
+**What:** Make sure every path that stores or compares an email uses `EmailSchema` (trimmed, lower-cased): sign-up, the therapist's client invite, Cognito `username`/`email` attributes, and the emulator. Check that the emulator issues `sub` values that `ClientIdSchema` (`z.uuid()`) accepts, the same version Cognito uses.
+
+**Why:** Cognito treats email aliases case-insensitively only when the pool is configured so; if one path lower-cases and another does not, one person can end up with two clients, or fail to sign in. An emulator `sub` that is not a valid UUID would make local specs pass on ids production never sees, or fail on ids it does.
+
+**Context:** WP0.2 follow-up 16 (adversarial review). `EmailSchema` and `ClientIdSchema` are in `packages/contracts/src/schemas.ts`.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** The Cognito and auth-emulator work packages.
+
 ## Web app
 
 ### Installable PWA
@@ -112,6 +150,18 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Effort:** S
 **Priority:** P1
 **Depends on:** WP0.10 (first AWS credentials on the machine).
+
+### Shared packages that run under plain Node
+
+**What:** Decide how `@fisio/domain` and `@fisio/contracts` are consumed outside Vite, Vitest and esbuild: either keep them source-only and require every runner (Lambda bundles, `tools/*` scripts, `pnpm tick`) to bundle or use a TypeScript loader, or add a build step with `exports` pointing at emitted `.js`. Cover the chosen path with the WP0.9 bundle smoke and one `tools` script run under plain `node`.
+
+**Why:** The packages export raw `.ts` with extensionless relative imports (`./time`). Node 22's type stripping does not resolve extensionless specifiers, so `node script.ts` importing `@fisio/domain` fails at load.
+
+**Context:** WP0.2 follow-up 15 (adversarial review). Bundled Lambdas are unaffected; scripts run directly are not.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (bundle smoke), or the first `tools` script that imports a package.
 
 ### Separate AWS accounts for dev and prod
 
