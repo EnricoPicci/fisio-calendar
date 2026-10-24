@@ -32,7 +32,9 @@ export class FixedClock implements Clock {
   }
 
   advance({ days = 0, hours = 0, minutes = 0, seconds = 0 }: Elapsed): void {
-    this.#epochMs += (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
+    const next = this.#epochMs + (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
+    if (!Number.isFinite(next)) throw new RangeError('Elapsed time must be a finite number');
+    this.#epochMs = next;
   }
 }
 

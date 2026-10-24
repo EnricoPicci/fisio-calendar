@@ -33,6 +33,9 @@
 - Make template-render errors and SES rejections such as `MessageRejected` permanent (`PermanentError`), with one channel spec per SES error name; `classifyError` treats anything unknown as retryable.
 - Parse stored `nextAttemptAt` and `updatedAt` through `IsoDateTimeSchema` at the repository boundary; a malformed value makes `isDue`/`isStale` false forever and the item sticks silently.
 - When a transition drops `lastError` (`markSent`), the repository must `REMOVE` the attribute; an `UpdateItem SET` of the returned fields leaves the old error on a sent item.
+- Redact or classify provider error text before it reaches `markFailedAttempt` (the domain only caps it at 500 characters): SES and SDK messages can carry recipient addresses, request ids or ARNs, and `lastError` is stored and shown on the dashboard. Log the full message instead.
+- A manual retry (T9) of a failure older than about a month leaves the item in its creation-month partition, which deliver-due no longer queries (§6.3), so it never sends and never alerts. Re-home the item to the current month in the retry use case, or refuse the retry with an error code.
+- A confirmation or reminder still in back-off can go out after the booking or slot was cancelled. Give items an expiry or a superseded check so `startDelivery` callers skip obsolete messages; cover it with a journey (cancel while CONF is in back-off: exactly one CANC, no later CONF).
 
 **Why:** Each one is correct in the pure domain but fails at the integration boundary, where nothing in WP0.2 can test it.
 

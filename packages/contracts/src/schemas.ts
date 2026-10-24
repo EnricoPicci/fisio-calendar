@@ -29,8 +29,12 @@ export const IsoDateSchema = z.string().refine(isIsoDate, 'Expected a real date 
 /** A local wall-clock time, `HH:mm`, from 00:00 to 23:59. */
 export const LocalTimeSchema = z.string().refine(isLocalTime, 'Expected a time as HH:mm');
 
-/** A UTC instant, ISO 8601 with a `Z` suffix (how every instant is stored and sent). */
-export const IsoDateTimeSchema = z.iso.datetime();
+/**
+ * A UTC instant in the canonical `Date.toISOString()` form: `yyyy-mm-ddTHH:mm:ss.sssZ`, exactly
+ * three fraction digits. Instants are stored and compared as strings in DynamoDB, and only one
+ * fixed-width form sorts the same way as time.
+ */
+export const IsoDateTimeSchema = z.iso.datetime({ precision: 3 });
 
 export const SlotTypeSchema = z.enum(SLOT_TYPES);
 

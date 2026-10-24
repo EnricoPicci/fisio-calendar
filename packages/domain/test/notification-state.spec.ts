@@ -57,6 +57,8 @@ describe('S3 Delivery: notification state machine', () => {
 
   it('retryable error → pending with nextAttemptAt per back-off table; attempts incremented', () => {
     expect(BACKOFF_MINUTES).toEqual([1, 5, 30, 120]);
+    // One wait between each pair of attempts: the table and the limit must move together.
+    expect(BACKOFF_MINUTES).toHaveLength(MAX_ATTEMPTS - 1);
     let state = newPendingState(T0);
     let now = T0;
     for (const [i, minutes] of BACKOFF_MINUTES.entries()) {

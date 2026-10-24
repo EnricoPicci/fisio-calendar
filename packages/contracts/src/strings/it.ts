@@ -1,3 +1,4 @@
+import type { SlotType } from '@fisio/domain';
 import type { ErrorCode } from '../errors';
 
 /**
@@ -21,10 +22,8 @@ export interface Strings {
     readonly unexpectedError: string;
     readonly offline: string;
   };
-  readonly slotTypes: {
-    readonly studio: string;
-    readonly pool: string;
-  };
+  /** Keyed by the domain's slot types, so a new type without a label is a compile error. */
+  readonly slotTypes: Readonly<Record<SlotType, string>>;
   readonly errors: Readonly<Record<ErrorCode, string>>;
 }
 

@@ -65,11 +65,30 @@ describe('Zod base schemas', () => {
     expect(ok(LocalTimeSchema, '9:00')).toBe(false);
   });
 
-  it('IsoDateTime accepts UTC instants only (Z suffix)', () => {
-    expect(ok(IsoDateTimeSchema, '2027-03-28T07:00:00Z')).toBe(true);
+  it('IsoDateTime accepts only the canonical UTC form that toISOString produces', () => {
     expect(ok(IsoDateTimeSchema, '2027-03-28T07:00:00.000Z')).toBe(true);
-    expect(ok(IsoDateTimeSchema, '2027-03-28T09:00:00+02:00')).toBe(false);
-    expect(ok(IsoDateTimeSchema, '2027-03-28')).toBe(false);
+    expect(ok(IsoDateTimeSchema, new Date('2027-10-31T08:00:00Z').toISOString())).toBe(true);
+    for (const invalid of [
+      '2027-03-28T07:00:00Z',
+      '2027-03-28T07:00:00.123456Z',
+      '2027-03-28T07:00Z',
+      '2027-03-28T09:00:00.000+02:00',
+      '2027-03-28',
+    ]) {
+      expect(ok(IsoDateTimeSchema, invalid), invalid).toBe(false);
+    }
+  });
+
+  it('canonical instants sort as strings in time order', () => {
+    const instants = [
+      '2027-03-28T07:00:00.999Z',
+      '2027-03-28T07:00:01.000Z',
+      '2027-03-28T07:00:00.000Z',
+    ];
+    for (const value of instants) expect(ok(IsoDateTimeSchema, value)).toBe(true);
+    expect([...instants].sort()).toEqual(
+      [...instants].sort((a, b) => Date.parse(a) - Date.parse(b)),
+    );
   });
 
   it('SlotType is studio or pool', () => {
