@@ -22,7 +22,7 @@ export interface DeliveryState {
   readonly nextAttemptAt: string;
   /** Instant of the last transition; the sweep measures a stuck `sending` from it. */
   readonly updatedAt: string;
-  /** Provider error of the last failed attempt, at most {@link MAX_ERROR_LENGTH} characters. */
+  /** Provider error of the last failed attempt, at most {@link MAX_ERROR_LENGTH} UTF-16 units. */
   readonly lastError?: string;
   readonly providerMessageId?: string;
   readonly sentAt?: string;
@@ -115,29 +115,45 @@ export function startDelivery(state: DeliveryState, now: Date): DeliveryState {
   return { ...state, status: 'sending', updatedAt: now.toISOString() };
 }
 
-/** sending → sent. */
+/**
+ * sending → sent. The provider has accepted the message, so the item is sent even when the
+ * provider returned no id; an empty id is not stored.
+ */
 export function markSent(
   state: DeliveryState,
   now: Date,
   providerMessageId: string,
 ): DeliveryState {
   if (state.status !== 'sending') throw new InvalidTransitionError('mark sent', state.status);
-  if (!providerMessageId) throw new RangeError('A sent notification needs a providerMessageId');
-  const { lastError: _dropped, ...rest } = state;
+  const { lastError: _dropped, providerMessageId: _previous, ...rest } = state;
   const iso = now.toISOString();
-  return { ...rest, status: 'sent', providerMessageId, sentAt: iso, updatedAt: iso };
+  return {
+    ...rest,
+    status: 'sent',
+    ...(providerMessageId ? { providerMessageId } : {}),
+    sentAt: iso,
+    updatedAt: iso,
+  };
 }
 
-/** sending → pending with back-off, or → failed (permanent error or attempt limit reached). */
+/**
+ * sending → pending with back-off, or → failed (permanent error or attempt limit reached).
+ * A stored attempt counter that is not a whole number cannot be trusted to stop the retries,
+ * so the item fails and the therapist is alerted.
+ */
 export function markFailedAttempt(state: DeliveryState, now: Date, error: unknown): FailureOutcome {
   if (state.status !== 'sending') {
     throw new InvalidTransitionError('record a failed attempt of', state.status);
   }
+  const iso = now.toISOString();
   if (!Number.isInteger(state.attempts) || state.attempts < 0) {
-    throw new RangeError(`Stored attempts must be a whole number, got ${String(state.attempts)}`);
+    const lastError = 'stored attempts counter is not a whole number';
+    return {
+      state: { ...state, status: 'failed', attempts: MAX_ATTEMPTS, lastError, updatedAt: iso },
+      alertTherapist: true,
+    };
   }
   const attempts = state.attempts + 1;
-  const iso = now.toISOString();
   const lastError = capErrorText(describeError(error));
   if (classifyError(error) === 'permanent' || attempts >= MAX_ATTEMPTS) {
     return {

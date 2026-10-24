@@ -9,8 +9,13 @@ import {
 /**
  * Slot identity (docs/architecture.md §3.2, §5.1, decision 14A): `<date>T<HH:mm>#<type>`,
  * e.g. `2027-03-28T09:00#pool`. Unique within the therapist; date and start are local
- * (Europe/Rome) wall-clock values, and the start must exist there (not in a DST gap). This module is the only place that builds or reads one;
+ * (Europe/Rome) wall-clock values. This module is the only place that builds or reads one;
  * repository keys derive from it. Ids of one type sort chronologically as plain strings.
+ *
+ * `parse`, `of` and `is` check the format only, so a stored id stays readable whatever the
+ * runtime's tz data says. Ids entering the system must also name a start that exists in Rome
+ * (not inside the spring-forward gap): `format` enforces it, and request input goes through
+ * `SlotIdSchema`, which checks {@link startExists}.
  */
 export const SLOT_TYPES = ['studio', 'pool'] as const;
 export type SlotType = (typeof SLOT_TYPES)[number];
@@ -49,17 +54,26 @@ function check(input: string, parts: SlotIdParts): void {
   if (!isSlotType(parts.type)) {
     throw new InvalidSlotIdError(input, `type must be one of ${SLOT_TYPES.join(', ')}`);
   }
+}
+
+/** False when the start falls in a gap the Rome clocks skip (02:30 on 2027-03-28). */
+function startExists(id: SlotId): boolean {
+  const { date, start } = parse(id);
   try {
-    localDateTimeToUtc(parts.date, parts.start, THERAPIST_TIME_ZONE);
+    localDateTimeToUtc(date, start, THERAPIST_TIME_ZONE);
+    return true;
   } catch (error) {
-    if (!(error instanceof NonexistentLocalTimeError)) throw error;
-    throw new InvalidSlotIdError(input, `start does not exist in ${THERAPIST_TIME_ZONE}`);
+    if (error instanceof NonexistentLocalTimeError) return false;
+    throw error;
   }
 }
 
 function format(parts: SlotIdParts): SlotId {
   const id = `${parts.date}T${parts.start}#${parts.type}`;
   check(id, parts);
+  if (!startExists(id as SlotId)) {
+    throw new InvalidSlotIdError(id, `start does not exist in ${THERAPIST_TIME_ZONE}`);
+  }
   return id as SlotId;
 }
 
@@ -86,5 +100,8 @@ function is(input: string): input is SlotId {
   }
 }
 
-/** `format` builds an id from parts, `parse` reads one, `of` brands a string, `is` tests one. */
-export const SlotId = { format, parse, of, is } as const;
+/**
+ * `format` builds an id from parts, `parse` reads one, `of` brands a string, `is` tests one,
+ * `startExists` checks that its start is a real Rome wall-clock time.
+ */
+export const SlotId = { format, parse, of, is, startExists } as const;

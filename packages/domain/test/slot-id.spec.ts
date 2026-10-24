@@ -64,15 +64,26 @@ describe('SlotId: identity of a slot (<date>T<HH:mm>#<type>)', () => {
     ).toThrow(InvalidSlotIdError);
   });
 
-  // Value: protects=a slot id names a start that exists in Rome, so the API answers validation_failed, not a 500; fails_when=a DST-gap start passes SlotId and later throws NonexistentLocalTimeError; why_new=format checks never asked the zone; seam=none; no_claim=the API error mapping (WP0.4)
-  it('rejects a start inside the spring-forward gap, which does not exist in Rome', () => {
-    expect(() => SlotId.of('2027-03-28T02:30#pool')).toThrow(InvalidSlotIdError);
-    expect(SlotId.is('2027-03-28T02:30#studio')).toBe(false);
+  // Value: protects=a new slot id names a start that exists in Rome, so the API answers validation_failed, not a 500; fails_when=format or startExists accepts a DST-gap start; why_new=format checks never asked the zone; seam=none; no_claim=the API error mapping (WP0.4)
+  it('format refuses a start inside the spring-forward gap, which does not exist in Rome', () => {
     expect(() => SlotId.format({ date: '2027-03-28', start: '02:00', type: 'pool' })).toThrow(
       InvalidSlotIdError,
     );
-    expect(SlotId.is('2027-03-28T03:00#pool')).toBe(true);
-    expect(SlotId.is('2027-10-31T02:30#pool')).toBe(true);
+    expect(SlotId.startExists(SlotId.of('2027-03-28T02:30#pool'))).toBe(false);
+    expect(SlotId.startExists(SlotId.of('2027-03-28T03:00#pool'))).toBe(true);
+    // The repeated fall-back hour exists (twice); it is not a gap.
+    expect(SlotId.startExists(SlotId.of('2027-10-31T02:30#pool'))).toBe(true);
+  });
+
+  // Value: protects=a stored id stays readable whatever the runtime's tz data says; fails_when=parse/of/is consult the time zone again, so a tz-data change breaks reading stored keys; why_new=the gap check used to run on every read; seam=none; no_claim=behaviour under real tz-data changes
+  it('parse, of and is check the format only, so stored ids stay readable', () => {
+    expect(SlotId.parse('2027-03-28T02:30#studio')).toEqual({
+      date: '2027-03-28',
+      start: '02:30',
+      type: 'studio',
+    });
+    expect(SlotId.is('2027-03-28T02:30#studio')).toBe(true);
+    expect(() => SlotId.of('2027-03-28T02:30#pool')).not.toThrow();
   });
 
   it('the error names the rejected input', () => {

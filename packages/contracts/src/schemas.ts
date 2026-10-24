@@ -40,7 +40,11 @@ export const IsoDateTimeSchema = z.iso
 
 export const SlotTypeSchema = z.enum(SLOT_TYPES);
 
+/** A slot id from a request: well formed, and its start exists in Rome (not in a DST gap). */
 export const SlotIdSchema = z
   .string()
-  .refine(SlotId.is, 'Expected a slot id such as 2027-03-28T09:00#pool')
+  .refine(
+    (value) => SlotId.is(value) && SlotId.startExists(value),
+    'Expected a slot id such as 2027-03-28T09:00#pool',
+  )
   .transform((value) => value as SlotId);

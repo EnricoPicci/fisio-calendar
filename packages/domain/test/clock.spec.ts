@@ -28,9 +28,16 @@ describe('Clock: injectable source of the current instant', () => {
     expect(clock.now().toISOString()).toBe('2027-03-29T01:10:30.000Z');
   });
 
+  // Value: protects=now() never returns an Invalid Date for an offset-bearing but impossible instant; fails_when=the NaN check is dropped (the offset regex alone passes '2027-13-45T00:00:00Z'); why_new=both strings above fail the offset check first; seam=none; no_claim=none beyond protects
   it('refuses an invalid instant', () => {
     expect(() => new FixedClock('not a date')).toThrow(RangeError);
     expect(() => new FixedClock('2027-01-01T00:00:00Z').set('nope')).toThrow(RangeError);
+    // Well-formed offset, impossible instant: only the NaN check can refuse these.
+    expect(() => new FixedClock('2027-13-45T00:00:00Z')).toThrow(RangeError);
+    expect(() => new FixedClock(new Date(Number.NaN))).toThrow(RangeError);
+    const clock = new FixedClock('2027-01-01T00:00:00Z');
+    expect(() => clock.set('2027-02-30T25:00:00+01:00')).toThrow(RangeError);
+    expect(clock.now().toISOString()).toBe('2027-01-01T00:00:00.000Z');
   });
 
   it('advance refuses a non-finite elapsed time and keeps the current instant', () => {

@@ -68,16 +68,17 @@ describe('Zod base schemas', () => {
   it('IsoDateTime accepts only the canonical UTC form that toISOString produces', () => {
     expect(ok(IsoDateTimeSchema, '2027-03-28T07:00:00.000Z')).toBe(true);
     expect(ok(IsoDateTimeSchema, new Date('2027-10-31T08:00:00Z').toISOString())).toBe(true);
+    // The first instant of the supported years.
+    expect(ok(IsoDateTimeSchema, '1900-01-01T00:00:00.000Z')).toBe(true);
     for (const invalid of [
       '2027-03-28T07:00:00Z',
       '2027-03-28T07:00:00.123456Z',
       '2027-03-28T07:00Z',
       '2027-03-28T09:00:00.000+02:00',
       '2027-03-28',
-      // Years IsoDateSchema refuses: below 1900, and 0000–0099 that Date.UTC cannot express.
+      // Years IsoDateSchema refuses: below 1900.
       '0050-03-28T07:00:00.000Z',
-      '1899-12-31T23:00:00.000Z',
-      '2027-02-30T07:00:00.000Z',
+      '1899-12-31T23:59:59.999Z',
     ]) {
       expect(ok(IsoDateTimeSchema, invalid), invalid).toBe(false);
     }

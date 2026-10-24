@@ -365,7 +365,7 @@ The conditions inside the transaction are the source of truth *(decisions 10A, 1
 4. Write the marker last. Invoke `notifier` asynchronously.
 5. A CloudWatch alarm fires if the marker is still absent 60 minutes after `reminderTime`.
 
-The same tick also runs: **extend-horizon** once a day (03:00 local, idempotent, enforcing the no-overlap invariant), **digest** at `digestTime` (default 07:30; marker `JOB#digest#<date>`; one `DIGEST#<date>#email` notification to the therapist), **deliver-due** (all `pending` items whose `nextAttemptAt ≤ now`) and **sweep** (items in `sending` for more than 10 minutes go back to `pending` with `attempts + 1`).
+The same tick also runs: **extend-horizon** once a day (03:00 local, idempotent, enforcing the no-overlap invariant), **digest** at `digestTime` (default 07:30; marker `JOB#digest#<date>`; one `DIGEST#<date>#email` notification to the therapist), **deliver-due** (all `pending` items whose `nextAttemptAt ≤ now`) and **sweep** (an item in `sending` for more than 10 minutes counts as a failed attempt: back to `pending` with `attempts + 1`, or `failed` at the attempt limit).
 
 ### 5.4 Notification pipeline (transactional outbox, explicit state machine)
 

@@ -248,7 +248,7 @@ describe('S3 Delivery: notification state machine', () => {
     expect(lastError).not.toMatch(/[\uD800-\uDBFF]$/);
   });
 
-  // Value: protects=a stored error is never empty and reading it never throws; fails_when=an empty message stores '' or a throwing getter escapes markFailedAttempt; why_new=only plain messages are covered; seam=none; no_claim=wording of the fallback
+  // Value: protects=a stored error is never empty and reading the error never throws (empty message, '' thrown, throwing message or name getter); fails_when=a fallback or a try/catch in describeError/nameOf is dropped; why_new=only plain messages were covered; seam=none; no_claim=wording of the fallback
   it('records an error with an empty or unreadable message by its name, without throwing', () => {
     const empty = failOnce(newPendingState(T0), T0, new PermanentError('')).state;
     expect(empty.lastError).toBe('PermanentError');
@@ -265,6 +265,22 @@ describe('S3 Delivery: notification state machine', () => {
     expect(failOnce(newPendingState(T0), T0, Object.create(null)).state.lastError).toEqual(
       expect.stringMatching(/./),
     );
+    expect(failOnce(newPendingState(T0), T0, '').state.lastError).toEqual(
+      expect.stringMatching(/./),
+    );
+
+    const nameless = new Error('provider said no');
+    Object.defineProperty(nameless, 'name', {
+      get() {
+        throw new Error('boom');
+      },
+    });
+    expect(classifyError(nameless)).toBe('retryable');
+    expect(failOnce(newPendingState(T0), T0, nameless).state).toMatchObject({
+      status: 'pending',
+      attempts: 1,
+      lastError: 'provider said no',
+    });
   });
 
   // Value: protects=a PermanentError from a second copy of the module (two bundles) still fails the item; fails_when=classifyError relies on instanceof only; why_new=specs share one module instance; seam=none; no_claim=errors renamed by minifiers
@@ -277,14 +293,20 @@ describe('S3 Delivery: notification state machine', () => {
   });
 
   // Value: protects=a corrupt stored attempt counter fails loudly instead of retrying forever with no delay; fails_when=attempts is NaN, a string or negative and the arithmetic goes on; why_new=attempts always came from newPendingState; seam=none; no_claim=how the notifier reports the throw
-  it('refuses a stored attempt counter that is not a whole number', () => {
+  it('a stored attempt counter that is not a whole number fails the item and alerts', () => {
     const sending = startDelivery(newPendingState(T0), T0);
     for (const attempts of [Number.NaN, -1, 1.5, '2', undefined]) {
       const corrupt = { ...sending, attempts } as unknown as DeliveryState;
-      expect(
-        () => markFailedAttempt(corrupt, T0, new RetryableError('x')),
-        String(attempts),
-      ).toThrow(RangeError);
+      const outcome = markFailedAttempt(corrupt, T0, new RetryableError('x'));
+      expect(outcome.state, String(attempts)).toMatchObject({
+        status: 'failed',
+        attempts: MAX_ATTEMPTS,
+      });
+      expect(outcome.alertTherapist, String(attempts)).toBe(true);
+      // The sweep goes through the same path, so a stuck corrupt item fails too.
+      expect(sweepStale(corrupt, at(11)).state.status, String(attempts)).toBe('failed');
+      // The therapist's manual retry (T9) gives it a fresh, valid counter.
+      expect(resetForManualRetry(outcome.state, at(60)).attempts).toBe(0);
     }
     expect(() => backoffMinutes(0)).toThrow(RangeError);
     expect(() => backoffMinutes(Number.NaN)).toThrow(RangeError);
@@ -292,10 +314,13 @@ describe('S3 Delivery: notification state machine', () => {
     expect(backoffMinutes(MAX_ATTEMPTS + 3)).toBe(BACKOFF_MINUTES.at(-1));
   });
 
-  // Value: protects=a sent item always records which provider message it was; fails_when=markSent stores an empty providerMessageId; why_new=specs always pass an id; seam=none; no_claim=id format per provider
-  it('refuses to mark a notification sent without a provider message id', () => {
+  // Value: protects=a message the provider accepted is recorded as sent even without an id, so the sweep never re-sends it, and no empty id is stored; fails_when=markSent throws or stores ''; why_new=specs always pass an id; seam=none; no_claim=id format per provider
+  it('marks a notification sent without storing an empty provider message id', () => {
     const sending = startDelivery(newPendingState(T0), T0);
-    expect(() => markSent(sending, T0, '')).toThrow(RangeError);
+    const sent = markSent(sending, at(1), '');
+    expect(sent).toMatchObject({ status: 'sent', sentAt: at(1).toISOString() });
+    expect(sent).not.toHaveProperty('providerMessageId');
+    expect(isStale(sent, at(60))).toBe(false);
   });
 
   it('transitions never mutate their input', () => {

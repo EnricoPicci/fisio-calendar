@@ -9,7 +9,9 @@ interface Config {
 
 const root = repoPath('');
 const skipped = new Set(['node_modules', '.git', 'dist', 'cdk.out', 'coverage']);
-const notSkipped = (path: string) => !path.split('/').some((part) => skipped.has(part));
+// The root e2e/ holds the Playwright binding specs (architecture §10.5): Playwright runs them.
+const notSkipped = (path: string) =>
+  path !== 'e2e' && !path.startsWith('e2e/') && !path.split('/').some((part) => skipped.has(part));
 
 async function projectSpecFiles(): Promise<Set<string>> {
   const rootConfig = (await import(repoPath('vitest.config.ts'))) as Config;
