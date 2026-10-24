@@ -7,6 +7,7 @@ import {
   isDue,
   isStale,
   MAX_ATTEMPTS,
+  MAX_ERROR_LENGTH,
   markFailedAttempt,
   markSent,
   newPendingState,
@@ -150,7 +151,10 @@ describe('S3 Delivery: notification state machine', () => {
     }
     const started = new Date(state.nextAttemptAt);
     const stuck = startDelivery(state, started);
-    const swept = sweepStale(stuck, new Date(started.getTime() + 10 * 60_000));
+    const swept = sweepStale(
+      stuck,
+      new Date(started.getTime() + SENDING_STALE_AFTER_MINUTES * 60_000),
+    );
     expect(swept.state.status).toBe('failed');
     expect(swept.alertTherapist).toBe(true);
   });
@@ -168,23 +172,68 @@ describe('S3 Delivery: notification state machine', () => {
     expect(isDue(retried, at(60))).toBe(true);
   });
 
-  it('refuses transitions the diagram does not allow', () => {
-    const pending = newPendingState(T0);
-    const notYetDue = failOnce(pending, T0, new RetryableError('busy')).state;
-    const sending = startDelivery(pending, T0);
-    const sent = markSent(sending, T0, 'm');
-    const failed = failOnce(pending, T0, new PermanentError('no')).state;
-
+  it('a pending item that is not due yet cannot start delivery', () => {
+    const notYetDue = failOnce(newPendingState(T0), T0, new RetryableError('busy')).state;
     expect(() => startDelivery(notYetDue, T0)).toThrow(InvalidTransitionError);
-    expect(() => startDelivery(sending, T0)).toThrow(InvalidTransitionError);
-    expect(() => startDelivery(sent, T0)).toThrow(InvalidTransitionError);
-    expect(() => startDelivery(failed, T0)).toThrow(InvalidTransitionError);
-    expect(() => markSent(pending, T0, 'm')).toThrow(InvalidTransitionError);
-    expect(() => markSent(sent, T0, 'm')).toThrow(InvalidTransitionError);
-    expect(() => markFailedAttempt(pending, T0, new Error('x'))).toThrow(InvalidTransitionError);
-    expect(() => sweepStale(pending, at(60))).toThrow(InvalidTransitionError);
-    expect(() => resetForManualRetry(pending, T0)).toThrow(InvalidTransitionError);
-    expect(() => resetForManualRetry(sent, T0)).toThrow(InvalidTransitionError);
+  });
+
+  describe('refuses every transition the diagram does not allow, leaving the item unchanged', () => {
+    const pending = Object.freeze(newPendingState(T0));
+    const sending = Object.freeze(startDelivery(pending, T0));
+    const sent = Object.freeze(markSent(sending, T0, 'm'));
+    const failed = Object.freeze(failOnce(pending, T0, new PermanentError('no')).state);
+    const states = { pending, sending, sent, failed } as const;
+
+    // Every (status, action) cell outside the diagram's arrows; the allowed cells are
+    // covered by the transition specs above.
+    const actions = {
+      deliver: (s: DeliveryState) => startDelivery(s, at(60)),
+      'provider accepted': (s: DeliveryState) => markSent(s, at(60), 'late'),
+      'retryable error': (s: DeliveryState) =>
+        markFailedAttempt(s, at(60), new RetryableError('x')),
+      'permanent error': (s: DeliveryState) =>
+        markFailedAttempt(s, at(60), new PermanentError('x')),
+      sweep: (s: DeliveryState) => sweepStale(s, at(60)),
+      'manual retry': (s: DeliveryState) => resetForManualRetry(s, at(60)),
+    } as const;
+    const forbidden: [keyof typeof states, keyof typeof actions][] = [
+      ['pending', 'provider accepted'],
+      ['pending', 'retryable error'],
+      ['pending', 'permanent error'],
+      ['pending', 'sweep'],
+      ['pending', 'manual retry'],
+      ['sending', 'deliver'],
+      ['sending', 'manual retry'],
+      ['sent', 'deliver'],
+      ['sent', 'provider accepted'],
+      ['sent', 'retryable error'],
+      ['sent', 'permanent error'],
+      ['sent', 'sweep'],
+      ['sent', 'manual retry'],
+      ['failed', 'deliver'],
+      ['failed', 'provider accepted'],
+      ['failed', 'retryable error'],
+      ['failed', 'permanent error'],
+      ['failed', 'sweep'],
+    ];
+
+    it.each(forbidden)('%s × %s', (status, action) => {
+      const before = structuredClone(states[status]);
+      expect(() => actions[action](states[status])).toThrow(InvalidTransitionError);
+      expect(states[status]).toEqual(before);
+    });
+  });
+
+  it('stored error text is capped so it fits the item and the dashboard', () => {
+    expect(MAX_ERROR_LENGTH).toBe(500);
+    const long = 'x'.repeat(MAX_ERROR_LENGTH + 100);
+    expect(
+      failOnce(newPendingState(T0), T0, new RetryableError(long)).state.lastError,
+    ).toHaveLength(MAX_ERROR_LENGTH);
+    expect(
+      failOnce(newPendingState(T0), T0, new PermanentError(long)).state.lastError,
+    ).toHaveLength(MAX_ERROR_LENGTH);
+    expect(failOnce(newPendingState(T0), T0, new Error('short')).state.lastError).toBe('short');
   });
 
   it('transitions never mutate their input', () => {

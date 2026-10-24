@@ -65,7 +65,14 @@ describe('SlotId: identity of a slot (<date>T<HH:mm>#<type>)', () => {
   });
 
   it('the error names the rejected input', () => {
-    expect(() => SlotId.parse('nope')).toThrow(/"nope"/);
+    let error: unknown;
+    try {
+      SlotId.parse('nope');
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(InvalidSlotIdError);
+    expect((error as InvalidSlotIdError).input).toBe('nope');
   });
 
   it('ids of the same type sort chronologically as plain strings', () => {

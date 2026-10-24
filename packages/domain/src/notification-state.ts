@@ -22,6 +22,7 @@ export interface DeliveryState {
   readonly nextAttemptAt: string;
   /** Instant of the last transition; the sweep measures a stuck `sending` from it. */
   readonly updatedAt: string;
+  /** Provider error of the last failed attempt, at most {@link MAX_ERROR_LENGTH} characters. */
   readonly lastError?: string;
   readonly providerMessageId?: string;
   readonly sentAt?: string;
@@ -37,6 +38,11 @@ export const MAX_ATTEMPTS = 5;
 /** Wait after the 1st, 2nd, 3rd and 4th failed attempt; the 5th fails the item. */
 export const BACKOFF_MINUTES: readonly number[] = [1, 5, 30, 120];
 export const SENDING_STALE_AFTER_MINUTES = 10;
+/**
+ * Stored error text is capped: it lands in a DynamoDB item (400 KB limit) and on the therapist
+ * dashboard. Full provider detail belongs in structured logs.
+ */
+export const MAX_ERROR_LENGTH = 500;
 
 /** A transient provider failure (throttling, timeout, 5xx): try again later. */
 export class RetryableError extends Error {
@@ -119,7 +125,10 @@ export function markFailedAttempt(state: DeliveryState, now: Date, error: unknow
   }
   const attempts = state.attempts + 1;
   const iso = now.toISOString();
-  const lastError = error instanceof Error ? error.message : String(error);
+  const lastError = (error instanceof Error ? error.message : String(error)).slice(
+    0,
+    MAX_ERROR_LENGTH,
+  );
   if (classifyError(error) === 'permanent' || attempts >= MAX_ATTEMPTS) {
     return {
       state: { ...state, status: 'failed', attempts, lastError, updatedAt: iso },

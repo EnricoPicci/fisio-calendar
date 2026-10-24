@@ -48,9 +48,22 @@ describe('S1 Slot generation: time helpers in Europe/Rome', () => {
     expect(utc('2027-10-31', '02:30')).toBe('2027-10-31T00:30:00.000Z');
   });
 
-  it('refuses malformed dates and times', () => {
-    expect(() => localDateTimeToUtc('2027-02-30', '09:00')).toThrow(RangeError);
-    expect(() => localDateTimeToUtc('2027-03-28', '24:00')).toThrow(RangeError);
+  it('refuses malformed dates and times as malformed, not as a daylight saving gap', () => {
+    for (const [date, time] of [
+      ['2027-02-30', '09:00'],
+      ['2027-03-28', '24:00'],
+      ['2027-03-28', '9:00'],
+      ['2027-03-28', '09:60'],
+    ] as const) {
+      let error: unknown;
+      try {
+        localDateTimeToUtc(date, time);
+      } catch (e) {
+        error = e;
+      }
+      expect(error, `${date} ${time}`).toBeInstanceOf(RangeError);
+      expect(error, `${date} ${time}`).not.toBeInstanceOf(NonexistentLocalTimeError);
+    }
   });
 
   it('localDateOf and localTimeOf read the Rome wall clock, not UTC', () => {
@@ -75,6 +88,29 @@ describe('S1 Slot generation: time helpers in Europe/Rome', () => {
     expect(localWeekday('2027-03-28')).toBe(7);
     expect(localWeekday('2027-03-29')).toBe(1);
     expect(localWeekday('2027-10-30')).toBe(6);
+  });
+
+  // Value: protects=localWeekday refuses an impossible date instead of naming a weekday; fails_when=it parses the string without the real-date check (2027-02-30 -> March 2); why_new=only addLocalDays/localDateTimeToUtc error paths are covered; seam=none; no_claim=other malformed formats
+  it('localWeekday refuses a date that does not exist', () => {
+    expect(() => localWeekday('2027-02-30')).toThrow(RangeError);
+    expect(() => localWeekday('2027-3-28')).toThrow(RangeError);
+  });
+
+  // Value: protects=the timeZone argument of the conversion helpers is honoured, not silently Rome; fails_when=a helper drops or ignores its timeZone parameter; why_new=every existing case uses the default zone; seam=none; no_claim=zones other than UTC and New York
+  it('honours an explicit time zone instead of the therapist default', () => {
+    expect(localDateTimeToUtc('2027-03-28', '09:00', 'UTC').toISOString()).toBe(
+      '2027-03-28T09:00:00.000Z',
+    );
+    const instant = new Date('2027-03-27T23:30:00Z');
+    expect(localDateOf(instant, 'UTC')).toBe('2027-03-27');
+    expect(localTimeOf(instant, 'UTC')).toBe('23:30');
+    // New York springs forward on 2027-03-14, two weeks before Rome.
+    expect(() => localDateTimeToUtc('2027-03-14', '02:30', 'America/New_York')).toThrow(
+      NonexistentLocalTimeError,
+    );
+    expect(localDateTimeToUtc('2027-03-28', '02:30', 'America/New_York').toISOString()).toBe(
+      '2027-03-28T06:30:00.000Z',
+    );
   });
 
   it('isIsoDate accepts only real calendar dates in yyyy-mm-dd', () => {
