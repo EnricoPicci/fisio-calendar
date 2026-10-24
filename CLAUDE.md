@@ -55,9 +55,11 @@ docs/           architecture, implementation plan, generated specs/journeys/open
   `destroy`/`rollback`/`gc`/`refactor` too). Only `pnpm deploy:dev`, which runs the full local
   suite first. `prod` is deployed only by the pipeline with manual approval; the one-time
   `cdk bootstrap` is yours.
-- The deploy hook has **no exemptions**: any Bash command whose text names one of those commands
-  is denied, even in a commit message, grep pattern or heredoc. Put such text in a file written
-  with Write/Edit and pass the file: `git commit -F <file>`, `gh pr create --body-file <file>`.
+- The deploy hook has **no exemptions** and ignores word order: any Bash command whose text
+  contains both the CDK CLI word and one of those subcommands is denied, even in a commit
+  message, grep pattern or heredoc. Put such text in a file written with Write/Edit and pass the
+  file: `git commit -F <file>`, `gh pr create --body-file <file>`.
+- Package `typecheck` scripts must be plain `tsc` invocations: the edit hook runs nothing else.
 - The deploy hook fails closed. If **every** Bash call is blocked, `node` is not on the hook's
   PATH: restart Claude Code from a
   shell where `node -v` prints 24.x. Last resort: `"disableAllHooks": true` in

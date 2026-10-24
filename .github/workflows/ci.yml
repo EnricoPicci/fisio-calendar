@@ -13,7 +13,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # Cancel superseded PR runs only: a push to main must never cancel a deploy job (WP0.10).
+  # Cancel superseded PR runs only, so a push to main never cancels an in-progress main run.
+  # A queued main run can still be superseded; WP0.10 gives the deploy jobs their own group.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

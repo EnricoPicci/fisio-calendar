@@ -13,10 +13,20 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { repoPath, runNode } from './run-node';
 
 const HOOK = repoPath('.claude/hooks/on-ts-edit.mjs');
+const PLAIN_TSC = 'tsc --noEmit -p tsconfig.json';
 
-// A throwaway repository: a root manifest, one package whose typecheck passes and one whose
-// typecheck fails. It has no node_modules, so the Biome and root-tsc steps are skipped and only
-// the per-package typecheck is exercised; the real workspace is never touched.
+/** Writes an executable `#!/bin/sh` stub into `<dir>/node_modules/.bin/<name>`. */
+function stub(dir: string, name: string, body: string) {
+  const bin = join(dir, 'node_modules', '.bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
+  chmodSync(join(bin, name), 0o755);
+}
+
+// A throwaway repository: a root manifest and packages whose typecheck is the plain
+// `tsc --noEmit -p tsconfig.json` the hook accepts. A stub `tsc` in the root node_modules/.bin
+// passes in `good` and fails in `bad`. There is no root tsconfig and no Biome, so only the
+// per-package typecheck is exercised; the real workspace is never touched.
 let root: string;
 // A directory next to the fixture whose path starts with the fixture's path (`<root>-sibling`).
 let sibling: string;
@@ -26,7 +36,17 @@ let outside: string;
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), 'on-ts-edit-'));
   writeFileSync(join(root, 'package.json'), '{"name":"fixture","private":true}');
-  const pkg = (name: string, typecheck: string) => {
+  stub(
+    root,
+    'tsc',
+    [
+      'case "$(basename "$PWD")" in',
+      `  bad) echo "src/index.ts(1,1): error TS2322: Type 'string' is not assignable"; exit 2;;`,
+      'esac',
+      'exit 0',
+    ].join('\n'),
+  );
+  const pkg = (name: string, typecheck: unknown) => {
     mkdirSync(join(root, name, 'src'), { recursive: true });
     writeFileSync(
       join(root, name, 'package.json'),
@@ -34,8 +54,8 @@ beforeAll(() => {
     );
     writeFileSync(join(root, name, 'src', 'index.ts'), 'export {};\n');
   };
-  pkg('good', 'exit 0');
-  pkg('bad', 'echo "src/index.ts(1,1): error TS2322: Type \'string\' is not assignable"; exit 2');
+  pkg('good', PLAIN_TSC);
+  pkg('bad', PLAIN_TSC);
   writeFileSync(join(root, 'README.md'), '# fixture\n');
   writeFileSync(join(root, 'bad', 'notes.md'), '# notes\n');
   writeFileSync(join(root, 'bad', 'src', 'view.tsx'), 'export {};\n');
@@ -60,8 +80,10 @@ beforeAll(() => {
   mkdirSync(join(root, 'bad', 'nested'), { recursive: true });
   writeFileSync(join(root, 'bad', 'nested', 'package.json'), '{"name":"nested","private":true}');
   writeFileSync(join(root, 'bad', 'nested', 'x.ts'), 'export {};\n');
-  // A package whose typecheck script would deploy: the hook must refuse to run it.
+  // Scripts the hook must not run without a prompt: one that deploys, one that chains a shell
+  // command after tsc. The hook reports them instead of running them.
   pkg('deployer', 'npx cdk deploy --all');
+  pkg('chained', 'tsc --noEmit && touch "$HOME/owned-by-a-typecheck-script"');
   // A symlink inside the project that points at the failing package outside it.
   symlinkSync(join(outside, 'src', 'index.ts'), join(root, 'good', 'src', 'linked.ts'));
 });
@@ -108,7 +130,7 @@ describe('Edit hook — typecheck the owning package after each .ts/.tsx edit', 
     expect(output.additionalContext).toContain('TS2322');
   });
 
-  // Value: protects=each ignore guard (extension, existence, root prefix, node_modules); fails_when=a guard is removed or prefix check loses `+ sep`; why_new=old rows pass guardless; seam=none; no_claim=symlinks
+  // Value: protects=each ignore guard (extension, existence, root prefix, node_modules); fails_when=a guard is removed or prefix check loses `+ sep`; why_new=old rows pass guardless; seam=none; no_claim=hard links
   it.each([
     ['a non-TypeScript file', 'README.md'],
     ['a file that does not exist', 'good/src/missing.ts'],
@@ -117,29 +139,28 @@ describe('Edit hook — typecheck the owning package after each .ts/.tsx edit', 
     ['a missing .ts file in a failing package', 'bad/src/missing.ts'],
     ['a file under node_modules', 'bad/node_modules/x/index.ts'],
     ['a sibling directory whose path starts with the project path', '<sibling>/src/index.ts'],
+    ['a symlink that points outside the project', 'good/src/linked.ts'],
   ])('ignores %s', (_label, filePath) => {
     const run = edit(filePath.replace('<sibling>', sibling).replace('<outside>', outside));
     expect(run.status).toBe(0);
     expect(run.stdout).toBe('');
   });
 
-  // Value: protects=a sub-folder manifest without a typecheck does not hide the real package; fails_when=owningPackage returns the first manifest it finds; why_new=gap [25]; seam=none; no_claim=nested workspaces
+  // Value: protects=a sub-folder manifest without a typecheck does not hide the real package; fails_when=owningPackage returns the first manifest it finds; why_new=coverage gap; seam=none; no_claim=nested workspaces
   it('walks past a manifest without a typecheck script to the owning package', () => {
     const run = edit('bad/nested/x.ts');
     expect(JSON.parse(run.stdout).hookSpecificOutput.additionalContext).toContain('typecheck bad');
   });
 
-  // Value: protects=a package script cannot deploy behind the gate; fails_when=the script check is removed; why_new=review round 4 finding; seam=none; no_claim=scripts that hide the command indirectly
-  it('refuses a typecheck script that would run a CDK command that changes an account', () => {
-    const run = edit('deployer/src/index.ts');
-    expect(JSON.parse(run.stdout).hookSpecificOutput.additionalContext).toContain('refused');
-  });
-
-  // Value: protects=a symlink cannot point the hook outside the project; fails_when=the root check compares unresolved paths; why_new=review round 4 finding; seam=none; no_claim=hard links
-  it('ignores a symlink that points outside the project', () => {
-    const run = edit('good/src/linked.ts');
-    expect(run.status).toBe(0);
-    expect(run.stdout).toBe('');
+  // Value: protects=the hook never runs a non-tsc script without a prompt; fails_when=the plain-tsc check is loosened or removed; why_new=review round 5 finding; seam=none; no_claim=what tsc itself loads (plugins in tsconfig)
+  it.each([
+    ['a script that deploys', 'deployer'],
+    ['a script that chains a shell command after tsc', 'chained'],
+  ])('reports instead of running %s', (_label, pkgName) => {
+    const run = edit(`${pkgName}/src/index.ts`);
+    const context: string = JSON.parse(run.stdout).hookSpecificOutput.additionalContext;
+    expect(context).toContain(`typecheck ${pkgName}`);
+    expect(context).toContain('not run: the typecheck script is not a plain tsc command');
   });
 
   it('ignores hook input that is not valid JSON', () => {
@@ -151,23 +172,20 @@ describe('Edit hook — typecheck the owning package after each .ts/.tsx edit', 
 
 // A second throwaway repository with stub binaries in node_modules/.bin, so the Biome step and
 // the root-tsconfig step run. The stub `biome` fails (80 lines of output) only for files under
-// bad/; the stub `tsc` lists only the root vitest.config.ts and reports one error for it.
+// bad/; the stub `tsc` lists only the root vitest.config.ts, passes in `good`, fails in `bad`
+// and reports one error everywhere else (the root and `pathcheck`).
 describe('Edit hook — Biome and the root tsconfig, with binaries installed', () => {
   let tooled: string;
 
   beforeAll(() => {
     tooled = mkdtempSync(join(tmpdir(), 'on-ts-edit-tooled-'));
-    const bin = join(tooled, 'node_modules', '.bin');
-    mkdirSync(bin, { recursive: true });
-    const stub = (name: string, body: string) => {
-      writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
-      chmodSync(join(bin, name), 0o755);
-    };
     stub(
+      tooled,
       'biome',
       'case "$3" in */bad/*) i=1; while [ $i -le 80 ]; do echo "lint $i"; i=$((i+1)); done; exit 1;; esac\nexit 0',
     );
     stub(
+      tooled,
       'tsc',
       [
         'for a in "$@"; do',
@@ -175,6 +193,10 @@ describe('Edit hook — Biome and the root tsconfig, with binaries installed', (
         // /var -> /private/var symlink), so the hook must compare real paths to recognise it.
         `  if [ "$a" = "--listFilesOnly" ]; then echo '${join(realpathSync(tooled), 'vitest.config.ts')}'; exit 0; fi`,
         'done',
+        'case "$(basename "$PWD")" in',
+        '  good) exit 0;;',
+        '  bad) echo "src/index.ts(1,1): error TS2322: Type mismatch"; exit 2;;',
+        'esac',
         "echo 'vitest.config.ts(1,1): error TS2322: boom'",
         'exit 2',
       ].join('\n'),
@@ -183,18 +205,14 @@ describe('Edit hook — Biome and the root tsconfig, with binaries installed', (
     writeFileSync(join(tooled, 'tsconfig.json'), '{}');
     writeFileSync(join(tooled, 'vitest.config.ts'), 'export default {};\n');
     writeFileSync(join(tooled, 'stray.ts'), 'export {};\n');
-    const pkg = (name: string, typecheck: string) => {
+    for (const name of ['good', 'bad', 'pathcheck']) {
       mkdirSync(join(tooled, name, 'src'), { recursive: true });
       writeFileSync(
         join(tooled, name, 'package.json'),
-        JSON.stringify({ name, private: true, scripts: { typecheck } }),
+        JSON.stringify({ name, private: true, scripts: { typecheck: PLAIN_TSC } }),
       );
       writeFileSync(join(tooled, name, 'src', 'index.ts'), 'export {};\n');
-    };
-    pkg('good', 'exit 0');
-    pkg('bad', 'echo "src/index.ts(1,1): error TS2322: Type mismatch"; exit 2');
-    // Calls `tsc` by name: only the root node_modules/.bin stub provides it.
-    pkg('pathcheck', 'tsc --noEmit -p tsconfig.json');
+    }
   });
 
   afterAll(() => {
@@ -222,7 +240,7 @@ describe('Edit hook — Biome and the root tsconfig, with binaries installed', (
     expect(context).toContain('TS2322');
   });
 
-  // Value: protects=package scripts find hoisted binaries without pnpm; fails_when=the root node_modules/.bin PATH prepend is lost (every real typecheck fails with tsc: not found); why_new=gap [28]; seam=none; no_claim=pnpm PATH rules
+  // Value: protects=package scripts find hoisted binaries without pnpm; fails_when=the root node_modules/.bin PATH prepend is lost (every real typecheck fails with tsc: not found); why_new=coverage gap; seam=none; no_claim=pnpm PATH rules
   it('runs a package script with the root node_modules/.bin on PATH', () => {
     const run = editIn('pathcheck/src/index.ts');
     const context: string = JSON.parse(run.stdout).hookSpecificOutput.additionalContext;

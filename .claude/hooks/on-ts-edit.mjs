@@ -8,20 +8,30 @@
 // Silent when everything passes. Remaining Biome diagnostics, type errors and timeouts are
 // returned to Claude as additional context, so they surface immediately instead of in a later
 // test run. All steps share one deadline inside the hook's 90 s budget (.claude/settings.json);
-// each runs in its own process group, killed as a whole at the deadline, so a chained script
-// cannot leave a tsc running or hold the hook open.
-// The typecheck script runs without a Bash call, so it never passes the deploy gate: a script
-// that names an account-changing CDK command (rule in ./lib/cdk-gate.mjs) is refused instead.
-// Paths are compared as real paths, so a symlink cannot point the hook outside the project.
+// each runs in its own process group, killed as a whole when it finishes, at the deadline, or
+// when Claude Code stops the hook, so a chained script cannot leave a tsc running.
+// The typecheck script runs without a Bash call or a permission prompt, so only a plain `tsc`
+// invocation (optionally several joined by `&&`) is run; any other script is reported as not run.
+// Paths are compared as real paths (case-correct on macOS), so a symlink or a differently cased
+// path cannot point the hook outside the project.
 // See docs/tooling-and-skills.md §2.3.
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import { runsMutatingCdk } from './lib/cdk-gate.mjs';
 
 const MAX_LINES = 60;
+const MAX_OUTPUT = 1_000_000;
 const BUDGET_MS = 80_000;
+const PLAIN_TSC = /^\s*tsc(?:\s+[\w./=:-]+)*(?:\s*&&\s*tsc(?:\s+[\w./=:-]+)*)*\s*$/;
 const deadline = Date.now() + BUDGET_MS;
+
+const groups = new Set();
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+  process.on(signal, () => {
+    for (const pid of groups) killGroup(pid);
+    process.exit(1);
+  });
+}
 
 const input = readStdinJson();
 const filePath = input?.tool_input?.file_path;
@@ -49,10 +59,9 @@ if (pkgDir === root) {
   const tsc = join(root, 'node_modules', '.bin', 'tsc');
   if (existsSync(tsc) && existsSync(join(root, 'tsconfig.json'))) {
     const listed = await run(tsc, ['-p', 'tsconfig.json', '--listFilesOnly'], { cwd: root });
-    if (timedOut(listed)) {
+    if (timedOut(listed) || listed.status !== 0) {
       report('tsc (root) --listFilesOnly', listed);
     } else if (
-      listed.status === 0 &&
       !listed.stdout
         .split('\n')
         .some((line) => line.trim() && realpath(resolve(root, line.trim())) === file)
@@ -98,7 +107,7 @@ function owningPackage(dir) {
       if (current === root) return root;
       try {
         const pkg = JSON.parse(readFileSync(manifest, 'utf8'));
-        if (pkg.scripts?.typecheck) return current;
+        if (typeof pkg.scripts?.typecheck === 'string') return current;
       } catch {
         // unreadable manifest: keep walking up
       }
@@ -109,18 +118,21 @@ function owningPackage(dir) {
   return undefined;
 }
 
-function runPackageScript(pkgDir, name) {
+async function runPackageScript(pkgDir, name) {
   // Same thing `pnpm run <name>` does, minus pnpm: the package's script with the package's and
   // the workspace root's node_modules/.bin prepended to PATH. Deliberately pnpm-free: the hook
   // must work before `corepack enable` has put pnpm on PATH.
-  const pkg = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
-  const script = pkg.scripts[name];
-  if (runsMutatingCdk(script)) {
+  let script;
+  try {
+    script = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).scripts[name];
+  } catch (error) {
+    return { status: 1, stdout: '', stderr: `not run: package.json unreadable (${error.message})` };
+  }
+  if (typeof script !== 'string' || !PLAIN_TSC.test(script)) {
     return {
       status: 1,
       stdout: '',
-      stderr:
-        'refused: this typecheck script names a CDK command that changes an AWS account, and scripts run by this hook bypass the deploy gate.',
+      stderr: `not run: the typecheck script is not a plain tsc command (${JSON.stringify(script)}). This hook runs it without a permission prompt, so anything else is refused; run it yourself.`,
     };
   }
   const bins = [join(pkgDir, 'node_modules', '.bin'), join(root, 'node_modules', '.bin')];
@@ -147,31 +159,46 @@ function run(command, args, options) {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    if (child.pid) groups.add(child.pid);
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      groups.delete(child.pid);
+      done(result);
+    };
     child.stdout.setEncoding('utf8').on('data', (chunk) => {
-      stdout += chunk;
+      if (stdout.length < MAX_OUTPUT) stdout += chunk;
     });
     child.stderr.setEncoding('utf8').on('data', (chunk) => {
-      stderr += chunk;
+      if (stderr.length < MAX_OUTPUT) stderr += chunk;
     });
-    // At the deadline, kill the whole process group, so a chained script's children die too.
     const timer = setTimeout(() => {
-      try {
-        process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        // already gone
-      }
+      killGroup(child.pid);
+      // A process that left the group may still hold the pipes: stop waiting for them.
+      child.stdout.destroy();
+      child.stderr.destroy();
+      settle({ status: null, signal: 'SIGKILL', stdout, stderr });
     }, remaining);
     child.on('error', (error) => {
-      clearTimeout(timer);
-      done({ status: null, signal: null, stdout, stderr: `${stderr}${error.message}` });
+      settle({ status: null, signal: null, stdout, stderr: `${stderr}${error.message}` });
     });
     child.on('close', (status, signal) => {
-      clearTimeout(timer);
-      done({ status, signal, stdout, stderr });
+      killGroup(child.pid); // background children of a finished script do not outlive it
+      settle({ status, signal, stdout, stderr });
     });
   });
+}
+
+function killGroup(pid) {
+  try {
+    if (pid) process.kill(-pid, 'SIGKILL');
+  } catch {
+    // already gone
+  }
 }
 
 function timedOut(result) {
@@ -180,7 +207,7 @@ function timedOut(result) {
 
 function realpath(path) {
   try {
-    return realpathSync(path);
+    return realpathSync.native(path);
   } catch {
     return path;
   }

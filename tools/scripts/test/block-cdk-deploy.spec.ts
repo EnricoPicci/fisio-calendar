@@ -88,6 +88,26 @@ describe('Deploy gate — direct CDK commands that change an AWS account are blo
       'a real command after a heredoc body with an apostrophe',
       "cat <<'EOF'\nit doesn't\nEOF\npnpm exec cdk deploy",
     ],
+    ['an empty substitution between CLI and subcommand', 'cdk $(true) deploy'],
+    ['an empty backtick pair between CLI and subcommand', 'cdk `` deploy'],
+    ['a glued quoted substitution', 'cdk "$(true)"deploy'],
+    ['a hex ANSI-C escape', "cdk $'\\x64eploy'"],
+    ['an octal ANSI-C escape', "cdk $'\\144eploy'"],
+    ['an escaped quote inside ANSI-C quoting before a separator', "cdk -c $'a\\';b' deploy"],
+    // `$` + `{` is shell parameter-expansion syntax, not a JS template placeholder.
+    ['a parameter default for the subcommand', 'cdk $' + '{x:-deploy}'],
+    ['a parameter default for the CLI', '$' + '{x:-cdk} deploy'],
+    ['a brace expansion', '{cdk,deploy}'],
+    ['IFS as the separator', 'cdk$' + '{IFS}deploy'],
+    ['a glob for the CLI name', 'node_modules/.bin/c?k deploy'],
+    ['a bracket glob for the CLI name', './node_modules/.bin/cd[k] deploy'],
+    ['the CLI entry point run with node', 'node node_modules/aws-cdk/bin/cdk.js deploy'],
+    ['xargs feeding the subcommand', 'echo deploy | xargs cdk'],
+    ['a parenthesis in a double-quoted argument', 'cdk -c "name=Fisio (dev)" deploy'],
+    ['an escaped quote then a separator in double quotes', 'cdk -c "a\\";b" deploy'],
+    ['a line continuation', 'cdk \\\ndeploy'],
+    ['a subcommand on another line', 'cdk synth\necho deploy'],
+    ['a subcommand in another command', 'cdk synth && echo deploy'],
   ])('denies %s, which the shell runs as a deploy', (_label, command) => {
     expect(verdict(command)).toBe('deny');
   });
@@ -116,9 +136,8 @@ describe('Deploy gate — direct CDK commands that change an AWS account are blo
     'pnpm deploy:dev',
     'cdk synth',
     'cdk diff --context stage=dev',
-    'cdk synth && echo deploy',
-    'cdk synth\necho deploy',
     'cdk synth 2>&1 | tee synth.log',
+    'mycdk deploy-notes.md',
     'cat .claude/hooks/block-cdk-deploy.mjs',
     'git commit -F .gstack/tmp/commit-message.txt',
     'gh pr create --title "WP0.1" --body-file .gstack/tmp/pr-body.md',
@@ -132,7 +151,7 @@ describe('Deploy gate — direct CDK commands that change an AWS account are blo
     expect(decide('not json')).toBe('deny');
   });
 
-  it('allows a tool call that carries no command', () => {
-    expect(decide(JSON.stringify({ tool_name: 'Bash', tool_input: {} }))).toBe('allow');
+  it('fails closed: denies a tool call that carries no command string', () => {
+    expect(decide(JSON.stringify({ tool_name: 'Bash', tool_input: {} }))).toBe('deny');
   });
 });
