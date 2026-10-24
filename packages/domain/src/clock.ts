@@ -1,5 +1,5 @@
 /**
- * The current instant, injected everywhere (docs/architecture.md §5.3) so specs run at a fixed
+ * The current instant, injected everywhere (docs/architecture.md §5.5) so specs run at a fixed
  * time and journeys can move time forward.
  */
 export interface Clock {

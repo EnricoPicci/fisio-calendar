@@ -2,7 +2,7 @@ import { TZDate } from '@date-fns/tz';
 import { format } from 'date-fns';
 
 /**
- * Time helpers (docs/architecture.md §5.3, S1). Slots are defined in local wall-clock time in
+ * Time helpers (docs/architecture.md §5.5, S1). Slots are defined in local wall-clock time in
  * the therapist's zone and stored as UTC instants, so a 09:00 slot stays 09:00 across DST.
  *
  * Conventions: a local date is `yyyy-mm-dd`, a local time is `HH:mm` (00:00–23:59), an instant
