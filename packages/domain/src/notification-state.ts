@@ -140,14 +140,14 @@ export function markSent(
 /**
  * sending → pending with back-off, or → failed (permanent error or attempt limit reached).
  * A stored attempt counter that is not a whole number cannot be trusted to stop the retries,
- * so the item fails and the therapist is alerted. Only a successful send stores a provider id,
- * so one left on the item by corrupt data is dropped here as in {@link markSent}.
+ * so the item fails and the therapist is alerted. Only a successful send stores a provider id
+ * and a sent time, so any left on the item by corrupt data are dropped here.
  */
 export function markFailedAttempt(item: DeliveryState, now: Date, error: unknown): FailureOutcome {
   if (item.status !== 'sending') {
     throw new InvalidTransitionError('record a failed attempt of', item.status);
   }
-  const { providerMessageId: _notSent, ...state } = item;
+  const { providerMessageId: _notSent, sentAt: _notSentAt, ...state } = item;
   const iso = now.toISOString();
   if (!Number.isInteger(state.attempts) || state.attempts < 0) {
     const lastError = capErrorText(

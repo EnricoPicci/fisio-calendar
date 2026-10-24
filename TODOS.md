@@ -28,11 +28,11 @@
 
 ### Notifier edge cases from the WP0.2 review
 
-**What:** Handle four cases when the notifier applies the delivery state machine:
+**What:** Handle these cases when the notifier applies the delivery state machine:
 - Do not raise `alertTherapist` for the therapist's own FAIL, alert or DIGEST notifications, so a broken SES account does not loop; rely on the failed-notifications alarm instead.
 - Make template-render errors and SES rejections such as `MessageRejected` permanent (`PermanentError`), with one channel spec per SES error name; `classifyError` treats anything unknown as retryable.
 - Parse stored `nextAttemptAt` and `updatedAt` through `IsoDateTimeSchema` at the repository boundary; a malformed value makes `isDue`/`isStale` false forever and the item sticks silently.
-- When a transition drops `lastError` (`markSent`), the repository must `REMOVE` the attribute; an `UpdateItem SET` of the returned fields leaves the old error on a sent item.
+- When a transition drops an attribute (`lastError` in `markSent`; `providerMessageId` and `sentAt` in `markFailedAttempt` and `sweepStale`; `providerMessageId` when `markSent` gets no usable id), the repository must `REMOVE` every attribute absent from the returned state; an `UpdateItem SET` of the returned fields leaves the old value in DynamoDB. Cover it with an API spec on DynamoDB Local (a stale id on a sending item, a retryable failure, then no `providerMessageId` stored).
 - Redact or classify provider error text before it reaches `markFailedAttempt` (the domain only caps it at 500 characters): SES and SDK messages can carry recipient addresses, request ids or ARNs, and `lastError` is stored and shown on the dashboard. Log the full message instead.
 - A manual retry (T9) of a failure older than about a month leaves the item in its creation-month partition, which deliver-due no longer queries (§6.3), so it never sends and never alerts. Re-home the item to the current month in the retry use case, or refuse the retry with an error code.
 - `sweepStale` throws `InvalidTransitionError` for an item that is not stale by its own clock reading (the DynamoDB filter `updatedAt < :stale` and the domain's `now` can disagree at the boundary). Catch it per item in the jobs handler so one item cannot abort the sweep, and keep the notifier Lambda timeout plus SES SDK retries well under `SENDING_STALE_AFTER_MINUTES` (an infra assertion), or the sweep re-queues a send that is still running and the email goes out twice.

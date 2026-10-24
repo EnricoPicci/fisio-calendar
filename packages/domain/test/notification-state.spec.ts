@@ -362,23 +362,27 @@ describe('S3 Delivery: notification state machine', () => {
     expect(backoffMinutes(MAX_ATTEMPTS + 3)).toBe(BACKOFF_MINUTES.at(-1));
   });
 
-  // Value: protects=an item has a provider id only after a send succeeded, so a failed or retried item never shows an id that belongs to no send; fails_when=markFailedAttempt or the sweep carries a stale id, or markSent keeps it; why_new=specs never seeded an id on a sending item; seam=none; no_claim=how corrupt data got the id
-  it('only a successful send stores a provider id', () => {
-    const stale = { ...startDelivery(newPendingState(T0), T0), providerMessageId: 'old' };
-    for (const outcome of [
-      markFailedAttempt(stale, at(1), new RetryableError('x')),
-      markFailedAttempt(stale, at(1), new PermanentError('x')),
-      sweepStale(stale, at(11)),
-    ]) {
-      expect(outcome.state).not.toHaveProperty('providerMessageId');
-    }
-    expect(markSent(stale, at(1), 'new').providerMessageId).toBe('new');
-    // A corrupt item accepted without a usable id is sent and stores none.
+  // Value: protects=a failed or retried item never shows a send that did not happen (no provider id, no sent time), on both the normal and the corrupt-counter path; fails_when=markFailedAttempt or the sweep carries a stale id or sentAt; why_new=specs never seeded send fields on a sending item; seam=none; no_claim=how corrupt data got them
+  it('only a successful send stores a provider id and a sent time', () => {
+    const stale = {
+      ...startDelivery(newPendingState(T0), T0),
+      providerMessageId: 'old',
+      sentAt: T0.toISOString(),
+    };
     const corrupt = { ...stale, attempts: Number.NaN } as DeliveryState;
-    for (const id of [undefined, '', '   ']) {
-      const sent = markSent(corrupt, at(1), id);
-      expect(sent, String(id)).toMatchObject({ status: 'sent', sentAt: at(1).toISOString() });
-      expect(sent, String(id)).not.toHaveProperty('providerMessageId');
+    for (const item of [stale, corrupt]) {
+      for (const outcome of [
+        markFailedAttempt(item, at(1), new RetryableError('x')),
+        markFailedAttempt(item, at(1), new PermanentError('x')),
+        sweepStale(item, at(11)),
+      ]) {
+        expect(outcome.state, String(item.attempts)).not.toHaveProperty('providerMessageId');
+        expect(outcome.state, String(item.attempts)).not.toHaveProperty('sentAt');
+      }
+      expect(markSent(item, at(1), 'new')).toMatchObject({
+        providerMessageId: 'new',
+        sentAt: at(1).toISOString(),
+      });
     }
   });
 
@@ -392,7 +396,7 @@ describe('S3 Delivery: notification state machine', () => {
     // A provider id left on the item by corrupt data is not carried into the sent state.
     const stale = { ...sending, providerMessageId: 'old' };
     expect(markSent(stale, at(1), '')).not.toHaveProperty('providerMessageId');
-    // A missing or blank id matches no bounce event, so it is not stored either.
+    // A missing or blank id identifies no send, so it is not stored either.
     expect(markSent(sending, at(1))).not.toHaveProperty('providerMessageId');
     expect(markSent(sending, at(1), '   ')).not.toHaveProperty('providerMessageId');
   });
