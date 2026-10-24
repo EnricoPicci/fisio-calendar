@@ -10,14 +10,17 @@ runs and is tested locally.
 ## Layout
 
 ```
-apps/web        React SPA: pages (templates only), view-models, services, journeys
-apps/api        API Lambda: http, use cases, repositories, notifier, identity, handlers
-packages/       shared libraries: domain, contracts, testkit (see packages/README.md)
-infra/          CDK stacks (Stateful, App, Edge), assertions, bundle smoke
-tools/          local stack, therapist bootstrap CLI, repo scripts
+apps/web        SPA: src/pages (templates) · src/viewmodels · src/services · test/journeys
+apps/api        Lambda: src/http · src/usecases · src/repo · src/notify · src/identity · src/handlers · src/runtime
+packages/       domain (pure TS) · contracts (Zod, errors, strings) · testkit (harness, recorders, doubles)
+infra/          CDK: Stateful, App, Edge stacks · assertions · bundle smoke
+tools/          local (docker-compose, auth emulator, tick, seed) · bootstrap (therapist CLI) · scripts
 e2e/            Playwright binding journeys
-docs/           architecture, implementation plan, generated specs, journeys, OpenAPI
+docs/           architecture, implementation plan, generated specs/journeys/openapi
 ```
+
+Shared libraries are described in [packages/README.md](packages/README.md); the full tree is in
+[architecture §5.1](docs/architecture.md#51-code-structure-monorepo-pnpm-workspaces).
 
 ## Getting started
 

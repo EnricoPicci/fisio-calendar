@@ -37,17 +37,10 @@ Scripts whose work package has not landed yet print which WP delivers them and e
    `packages/domain`, `ErrorCode` in `packages/contracts`) — never hand-built elsewhere.
 4. Spec files are `*.spec.ts(x)` under `src/` or `test/`; every spec runs at a fixed `Clock`.
 
-## Where things live (architecture §5.1)
+## Where things live
 
-```
-apps/web        SPA: src/pages (templates) · src/viewmodels · src/services · test/journeys
-apps/api        Lambda: src/http · src/usecases · src/repo · src/notify · src/identity · src/handlers · src/runtime
-packages/       domain (pure TS) · contracts (Zod, errors, strings) · testkit (harness, recorders, doubles)
-infra/          CDK: Stateful, App, Edge stacks · assertions · bundle smoke
-tools/          local (docker-compose, auth emulator, tick, seed) · bootstrap (therapist CLI) · scripts
-e2e/            Playwright binding journeys
-docs/           architecture, implementation plan, generated specs/journeys/openapi
-```
+The folder layout is in `README.md`; each package's role and dependency rules are in
+`packages/README.md` and the package's own README.
 
 ## Rules
 
