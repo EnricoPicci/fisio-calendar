@@ -12,7 +12,7 @@ locally. The design is `docs/architecture.md`; the work breakdown is `docs/imple
 | Command | What it does |
 |---|---|
 | `pnpm install` | pnpm 12 via `corepack enable` (version pinned in `package.json`); develop on Node 24 (`.nvmrc`). The Lambdas run Node 22 (architecture §4.3), so code must run on 22 too: `engines.node` stays `>=22.12` on purpose |
-| `pnpm local:up` | Docker: DynamoDB Local (:8000), Mailpit (UI `http://localhost:8025`) |
+| `pnpm local:up` / `local:down` | Docker: DynamoDB Local (:8000), Mailpit (UI `http://localhost:8025`) / stop them |
 | `pnpm dev` | api, auth emulator, web on the local stack |
 | `pnpm test` | **the complete local suite — the only definition of "green"** (domain, API, view-models, headless journeys, templates, infra assertions, bundle smoke, Playwright binding) |
 | `pnpm typecheck` / `pnpm lint` / `pnpm lint:fix` | `tsc --noEmit` per package / Biome check / Biome fix |
@@ -58,7 +58,8 @@ docs/           architecture, implementation plan, generated specs/journeys/open
 - The deploy hook has **no exemptions** and ignores word order: any Bash command whose text
   contains both the CDK CLI word and one of those subcommands is denied, even in a commit
   message, grep pattern or heredoc. Put such text in a file written with Write/Edit and pass the
-  file: `git commit -F <file>`, `gh pr create --body-file <file>`.
+  file: `git commit -F <file>`, `gh pr create --body-file <file>`. Both hooks and the
+  permission lists are described in `docs/tooling-and-skills.md` §2.2–2.3.
 - Package `typecheck` scripts must be plain `tsc` invocations: the edit hook runs nothing else.
 - The deploy hook fails closed. If **every** Bash call is blocked, `node` is not on the hook's
   PATH: restart Claude Code from a
