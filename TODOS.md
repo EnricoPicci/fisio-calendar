@@ -248,4 +248,27 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Priority:** P4
 **Depends on:** None.
 
+### Local stack hardening from the WP0.3 final review
+
+**What:** Small fixes to `tools/local` and the testkit setup, each with a spec where one is possible:
+- Default the endpoint to `http://127.0.0.1:8000`, matching the compose bind: `localhost` can resolve to `::1` first, where another server on port 8000 would answer instead of DynamoDB Local.
+- In `ensureTable`, compare `error.name` (`ResourceNotFoundException`, `ResourceInUseException`) instead of `instanceof`: the caller's client may come from another copy of `@aws-sdk/client-dynamodb` if the two packages ever drift apart.
+- Check the Node version at the top of `create-table.ts` (type stripping needs >= 22.18; `engines` stays `>=22.12` for the Lambda runtime) and print a clear message instead of an extension error.
+- Add `BillingModeSummary.BillingMode` and `LocalSecondaryIndexes` to the schema fingerprint, and run the check when a create lost the race (`ResourceInUseException`), so a table another process made from a different definition is refused too.
+- Global setup: keep the original error as `cause`, use `error.name` for SDK service errors, and add the "is the stack running?" hint only for connection errors and timeouts.
+- TTL in `DISABLING` state: refuse with a named remedy instead of the raw AWS error.
+- The mismatch message says "delete that table" with no command for it: add `node tools/local/src/delete-table.ts <stage>` or drop that option (and the same words in architecture §11.4).
+- `testDocumentClient()` never exposes its base client, so specs cannot close it; return it, or cache one client per worker.
+- Items written under fresh tenants accumulate in a long-running container (`-inMemory`, no `ttl` on spec items): set `ttl` on spec items or document `local:down && local:up` as the reset.
+- The DynamoDB healthcheck relies on `curl` being in the image; a digest bump to a slimmer base would fail `--wait` after about 60 s with no hint.
+- `isTestkitSetup` in `tools/scripts/test/vitest-projects.spec.ts` should use `path.resolve` so an absolute `globalSetup` entry is accepted; `DEFAULT_LOCAL_ENDPOINT` no longer needs to be exported.
+
+**Why:** None changes behaviour that matters today; each removes a confusing failure or a silent gap that later work packages (WP0.4–WP0.6, more spec files, longer-lived containers) would hit.
+
+**Context:** Final review pass and adversarial pass of the WP0.3 `/ship` run, deferred by the owner (fixing them would have needed a third fix cycle). The adversarial pass also claimed that DynamoDB Local's CORS defaults to `*`; a live probe of `amazon/dynamodb-local:3.3.1` disproved it: no `Access-Control-Allow-Origin` is sent to any origin, so do not add `-cors` (an allow-list would open access).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None; natural moment: WP0.4 or WP0.5, when more specs use the testkit.
+
 ## Completed
