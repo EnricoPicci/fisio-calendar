@@ -36,7 +36,8 @@ test/support/    fakes for specs (AuthService, ApiClient, JWTs); test/journeys a
   between concurrent requests, and ends the session (`signedOut$`) when a refresh is refused.
   The `AuthService` owns token persistence (`LocalAuthService` in the `Storage` port; Amplify in
   its own store).
-- **Build-time selection.** `VITE_AUTH=local` (default) or `amplify` with
+- **Build-time selection.** `VITE_AUTH=local` (the default in a dev build; a production build
+  must set it, or `readConfig` refuses to start) or `amplify` with
   `VITE_COGNITO_USER_POOL_ID`/`VITE_COGNITO_CLIENT_ID`; the Amplify module is a separate chunk
   the local build never loads. `VITE_AUTH_ISSUER` overrides the emulator URL.
 - **API types** come from `docs/openapi.json` through `pnpm openapi` (tools/openapi-types);

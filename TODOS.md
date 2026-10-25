@@ -524,6 +524,18 @@
 **Priority:** P3
 **Depends on:** WP0.9.
 
+### The emulator has no sign-out route
+
+**What:** Add a `POST /signout {refreshToken}` route to the auth emulator that retires the refresh record (and, for a global sign-out, bumps the token generation), call it best-effort from `LocalAuthService.signOut()` before clearing storage, and add a local-service spec row: after `signOut()`, a `refresh()` with the old pair is refused by the emulator, not only by storage.
+
+**Why:** `AmplifyAuthService.signOut()` revokes at Cognito, while the local sign-out only clears storage: the emulator's refresh token stays live for its whole lifetime, so every local journey about "sign-out ends the device" passes on the SPA's own storage checks and never proves the provider-refused path.
+
+**Context:** Red-team finding of the third WP0.7 ship-review pass.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
 ### A spec for the bootstrap CLI's run
 
 **What:** Let `runBootstrapCli` take its adapters (or an adapters factory), then spec exit 0 with the printed link, the "no setup link" and "re-enabled" lines, and exit 1 on a `BootstrapError`.
@@ -741,6 +753,54 @@
 **Effort:** M
 **Priority:** P4
 **Depends on:** A real request from the therapist.
+
+### A refresh may adopt another user's tokens on a shared device
+
+**What:** Compare the `sub` claim of the tokens a refresh hands over with the session's current one in `SessionViewModel` (`accessToken$`), and end the session (`refresh_refused`) on a mismatch; in `LocalAuthService.refresh()`, adopt another tab's pair only when its `sub` matches the pair this call used.
+
+**Why:** Tab A refreshes while tab B signs out and signs in as someone else (a shared phone, the therapist on a client's device): `LocalAuthService` adopts the pair it finds in storage and `accept()` checks only that the role is known, so tab A keeps showing A's greeting while every request carries B's bearer; with different roles `page$` flips to the other home with no `signedOut$`. Amplify's `fetchAuthSession({ forceRefresh: true })` refreshes whoever its `LastAuthUser` key names, so the cloud build has the same hole.
+
+**Context:** Adversarial finding of the third WP0.7 ship-review pass. Distinct from "Sign-out does not reach the other tabs" (above), which leaves tab A usable as A.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None.
+
+### The password-only therapist refusal lives only in the Amplify service
+
+**What:** Decide where "a password alone never counts as a finished setup" (architecture §15) is enforced on the SPA side: refuse a `signed_in` answer to `signInWithPassword` whose access token names the therapist in the port-independent layer (`SignInViewModel` or `SessionViewModel.start()`, signing the provider out as `start()` already does for an unknown role), or keep it in each `AuthService` and make the emulator refuse it too. Flip the local-service spec row "a therapist without TOTP enabled signs in at once" and the sign-in spec row "a password sign-in without an MFA step signs in at once" accordingly.
+
+**Why:** `AmplifyAuthService` refuses a therapist without TOTP (`#enrolledOnly`), `LocalAuthService` passes the tokens straight through and `SignInViewModel` accepts them, so the two implementations disagree on a security property and the headless journeys (WP0.8) will run against the permissive one; a regression in the cloud guard is invisible to `pnpm test`.
+
+**Context:** Adversarial finding of the third WP0.7 ship-review pass. Related: "Server-side control for a therapist session without TOTP" (above). Settle before WP0.8 builds journeys on the current behaviour.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None.
+
+### The production bundle is first exercised after a deploy
+
+**What:** Validate `VITE_AUTH` and `VITE_COGNITO_*` in `vite.config.ts` (`loadEnv`) so a production build without them fails at build time, not at app start on the user's device (`readConfig` refuses it in the browser today); run `vite build` as a step of `pnpm deploy:dev` before the cloud diff, or as a bundle smoke spec; give `vite preview` the same `/api` proxy as the dev server (today every `/api/v1` call of the previewed bundle is a 404 from the preview server); and document that testing on a phone over the LAN needs a tunnel or an https origin (Vite binds `127.0.0.1`, the emulator's `LOCAL_WEB_ORIGINS` refuses other origins, `LocalAuthService` posts to the loopback issuer, and `crypto.subtle` is missing on a non-secure origin).
+
+**Why:** `pnpm test` is the only definition of green and never runs `vite build`, so a bundle that fails to build or to boot is first seen after a deploy; the preview script and a phone on the LAN fail for reasons unrelated to the code under test.
+
+**Context:** Red-team findings of the third WP0.7 ship-review pass.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (cloud build), WP0.10 (dev smoke).
+
+### Follow-ups from the third WP0.7 ship-review pass
+
+**What:** Small corrections left out of the branch to keep the review converged: the `SessionViewModel` class doc still says a refresh refused for a passing reason "yields `null`" (it errors the request with the refusal); the `MemoryStorage` docstring omits its production role (the fallback when the browser blocks site storage); `fakeTokens` carries an `email` parameter no caller passes; `AppDeps.clock` has no consumer yet (reserved for the calendar view-models); `jwt.ts` says the SPA reads `email`, but only `role` and `exp` are read; the `signedOut$` comment names a shell notice that does not exist yet (see "The sign-in page does not say why a session ended"); `BUTTON` and `LINK` keep their hover feedback while disabled (`enabled:hover:` or `disabled:pointer-events-none`), and `LINK` stretches to the form's width in `flex-col` forms (`self-start`); `useObservable` renders `initial` once before subscribing (an extra render; the loading page flashes after the setup page navigates home); the `#enrolledToken` cache in `AmplifyAuthService` never hits in the SPA's call graph (one `restore()` per load, every refresh rotates); the two-tab refresh spec title claims more than it asserts; `#confirm()` with `confirmSignIn` resolving `isSignedIn: false` has no spec row; the Biome fence under `src/pages` matches exact specifiers, so `rxjs/operators` and the other `rxjs/*` subpaths pass it; four state-matrix cells of `LocalAuthService` and `AmplifyAuthService` (a refusal landing after another tab rotated, a refusal landing on a spent marker, `updateMFAPreference` refused as an `AuthError`, the setup sink's refusal) have no deterministic spec.
+
+**Why:** Each is a one-line or one-spec change; together they are the remaining informational findings of the third review pass, recorded here instead of a fourth fixing cycle.
+
+**Context:** Maintainability, design, performance, simplification, testing, state-machines and adversarial findings of the third WP0.7 ship-review pass (2026-10-25).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
 
 ## Infrastructure
 

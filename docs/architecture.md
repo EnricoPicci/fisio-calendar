@@ -253,9 +253,10 @@ flowchart TB
 fisio-calendar/
 ├─ apps/
 │  ├─ web/                 React SPA
+│  │  ├─ src/app/          ViewModel base, useObservable, DI context (useDeps, useViewModel), build-time config, the App shell
 │  │  ├─ src/pages/        templates (.tsx) — binding only, no logic
 │  │  ├─ src/viewmodels/   view-model classes (extend ViewModel; observables + methods)
-│  │  ├─ src/services/     ApiClient (typed, injectable fetch), AuthService, Strings, Clock
+│  │  ├─ src/services/     ApiClient (typed, injectable fetch), AuthService (Amplify / local emulator), Storage, generated API types
 │  │  └─ test/journeys/    headless UI journeys (§10.5): real view-models + real in-process API
 │  └─ api/                 Lambda code
 │     ├─ src/http/         Hono app, routes, middleware (jwt, client-status, errors → problem+json)
@@ -275,6 +276,7 @@ fisio-calendar/
 ├─ tools/
 │  ├─ local/               docker-compose (DynamoDB Local, Mailpit), auth emulator, seed, table and SMTP helpers (`@fisio/local/table`, `@fisio/local/smtp`)
 │  ├─ bootstrap/           `bootstrap:therapist` CLI (same IdentityProvider port; local, dev, prod)
+│  ├─ openapi-types/       second step of `pnpm openapi`: docs/openapi.json → the SPA's api.generated.ts (pins TypeScript 5 for itself, D30)
 │  └─ scripts/             repository tooling: placeholder scripts, specs for the Claude Code hooks
 ├─ e2e/                    Playwright journeys against the local stack
 ├─ docs/                   this document, implementation plan, generated spec report, OpenAPI
