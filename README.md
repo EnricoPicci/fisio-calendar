@@ -14,7 +14,7 @@ apps/web        SPA: src/pages (templates) · src/viewmodels · src/services · 
 apps/api        Lambda: src/http · src/usecases · src/repo · src/notify · src/identity · src/handlers · src/runtime
 packages/       domain (pure TS) · contracts (Zod, errors, strings) · testkit (harness, recorders, doubles)
 infra/          CDK: Stateful, App, Edge stacks · assertions · bundle smoke
-tools/          local (docker-compose, auth emulator, tick, seed) · bootstrap (therapist CLI) · scripts
+tools/          local (docker-compose; auth-emulator and seed packages; tick) · bootstrap (therapist CLI) · scripts
 e2e/            Playwright binding journeys
 docs/           architecture, implementation plan, generated specs/journeys/openapi
 ```
@@ -30,7 +30,8 @@ Requires Node 24 (`.nvmrc`), pnpm via `corepack enable`, and Docker.
 pnpm install
 pnpm local:up    # Docker: DynamoDB Local (:8000) and Mailpit (UI :8025), then the local table (Node >= 22.18)
 pnpm test        # the complete local suite: the only definition of green (needs local:up)
-pnpm dev         # the API on http://127.0.0.1:3000/api/v1 (watch mode)
+pnpm seed        # the therapist (prints password + TOTP secret) and a dozen clients
+pnpm dev         # the API on http://127.0.0.1:3000/api/v1 and the auth emulator on :9100 (watch mode)
 pnpm typecheck
 pnpm lint
 ```

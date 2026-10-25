@@ -184,6 +184,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@aws-sdk/client-cognito-identity-provider':
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/client-dynamodb':
         specifier: 3.1146.0
         version: 3.1146.0
@@ -212,6 +215,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@fisio/auth-emulator':
+        specifier: workspace:*
+        version: link:../../tools/local/auth-emulator
       '@fisio/testkit':
         specifier: workspace:*
         version: link:../../packages/testkit
@@ -258,7 +264,39 @@ importers:
         specifier: workspace:*
         version: link:../../tools/local
 
-  tools/bootstrap: {}
+  tools/bootstrap:
+    dependencies:
+      '@aws-sdk/client-cognito-identity-provider':
+        specifier: 3.1146.0
+        version: 3.1146.0
+      '@aws-sdk/client-dynamodb':
+        specifier: 3.1146.0
+        version: 3.1146.0
+      '@aws-sdk/lib-dynamodb':
+        specifier: 3.1146.0
+        version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
+      '@fisio/api':
+        specifier: workspace:*
+        version: link:../../apps/api
+      '@fisio/auth-emulator':
+        specifier: workspace:*
+        version: link:../local/auth-emulator
+      '@fisio/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@fisio/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@fisio/infra':
+        specifier: workspace:*
+        version: link:../../infra
+      '@fisio/local':
+        specifier: workspace:*
+        version: link:../local
+    devDependencies:
+      '@fisio/testkit':
+        specifier: workspace:*
+        version: link:../../packages/testkit
 
   tools/local:
     dependencies:
@@ -272,6 +310,74 @@ importers:
         specifier: workspace:*
         version: link:../../infra
 
+  tools/local/auth-emulator:
+    dependencies:
+      '@aws-sdk/client-dynamodb':
+        specifier: 3.1146.0
+        version: 3.1146.0
+      '@aws-sdk/lib-dynamodb':
+        specifier: 3.1146.0
+        version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
+      '@fisio/contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      '@fisio/domain':
+        specifier: workspace:*
+        version: link:../../../packages/domain
+      '@fisio/infra':
+        specifier: workspace:*
+        version: link:../../../infra
+      '@fisio/local':
+        specifier: workspace:*
+        version: link:..
+      '@hono/node-server':
+        specifier: ^2.1.5
+        version: 2.1.5(hono@4.13.13)
+      hono:
+        specifier: ^4.13.13
+        version: 4.13.13
+      otplib:
+        specifier: ^13.5.0
+        version: 13.5.0
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@fisio/testkit':
+        specifier: workspace:*
+        version: link:../../../packages/testkit
+
+  tools/local/seed:
+    dependencies:
+      '@aws-sdk/lib-dynamodb':
+        specifier: 3.1146.0
+        version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
+      '@fisio/api':
+        specifier: workspace:*
+        version: link:../../../apps/api
+      '@fisio/auth-emulator':
+        specifier: workspace:*
+        version: link:../auth-emulator
+      '@fisio/bootstrap':
+        specifier: workspace:*
+        version: link:../../bootstrap
+      '@fisio/contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
+      '@fisio/domain':
+        specifier: workspace:*
+        version: link:../../../packages/domain
+      '@fisio/infra':
+        specifier: workspace:*
+        version: link:../../../infra
+      '@fisio/local':
+        specifier: workspace:*
+        version: link:..
+    devDependencies:
+      '@fisio/testkit':
+        specifier: workspace:*
+        version: link:../../../packages/testkit
+
   tools/scripts: {}
 
 packages:
@@ -280,6 +386,10 @@ packages:
     resolution: {integrity: sha512-pLMeRgRYS7/vZIgAAkOe2P6+XGTifR1MT9pqDoxZ11EmcJJ+DPmdPqLN8ZZF4U8R9KHCCQCS9c2wtuE8wSrfkw==}
     peerDependencies:
       zod: ^4.0.0
+
+  '@aws-sdk/client-cognito-identity-provider@3.1146.0':
+    resolution: {integrity: sha512-/V9D0Z61RpDmfbGOUUNWlXPZhY7nwuTRBtYkOmDaJW9OfW43PqnYpWAZek86+YGdlHj1kEKZerJf7iPdA3xVWw==}
+    engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-dynamodb@3.1146.0':
     resolution: {integrity: sha512-3Mc8YkSu2KlgNNSuspaW+Fo0pTwX+fLYlC5ovH3yX3OoDg2RPtp3Py8KuQJr0FDlQj1tHw0K3+AtaH4NXlI3aQ==}
@@ -626,6 +736,28 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
+  '@noble/hashes@2.4.0':
+    resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
+    engines: {node: '>= 20.19.0'}
+
+  '@otplib/core@13.5.0':
+    resolution: {integrity: sha512-2rURdkYkb3BDhMs3j/oCCPTve1ybJ6ruLfLfSe1ZSPV+y6RFTbLfAuT0m0ZCnps88ogkIq9t/+Li/kg5RofQwQ==}
+
+  '@otplib/hotp@13.5.0':
+    resolution: {integrity: sha512-1EwwAti05CeWJn4xXOVMBK9N6dIJlJw/cQkQyiL9OVlkeS452wAve3ffodi+5IUZdWoF1wxVug38RisdxDqDWw==}
+
+  '@otplib/plugin-base32-scure@13.5.0':
+    resolution: {integrity: sha512-3JEIHindUMiIeNL0jXepSAkZ/7IkWq4sPdG9eXK0lrMXZG9RdKu5oz/4tuuTodtsFUPYhKlRMqv5xUvQIkMIaA==}
+
+  '@otplib/plugin-crypto-noble@13.5.0':
+    resolution: {integrity: sha512-fihOAGFvc4b8XTKyIK3jifFP2nLrUNc2bOaJ3UkUKJjy1XI2FbHKG0WmOH+jFsPfa6VsOnouCnEmSznDxIe0pA==}
+
+  '@otplib/totp@13.5.0':
+    resolution: {integrity: sha512-GD9LzQnbHDwXCp79s8AaiA5cJR6luX5fEr9AN32AWx4ooRvllPbMkG80gHSA0jbGCnAIX/ChyOtTZ8tgJHMkSg==}
+
+  '@otplib/uri@13.5.0':
+    resolution: {integrity: sha512-LsL1hqTEgJHY40U2eb/Qp6OR1tKkNGwHQTrqqjIuJj0cawGWkLEmeUFK1MHzWBQ4bgy5IdeB5Et7gIDSAH/CRw==}
+
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
 
@@ -727,6 +859,9 @@ packages:
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
+
+  '@scure/base@2.4.0':
+    resolution: {integrity: sha512-thZ1TuJwFwBblOhgsjDKvvGirBxNp+wSvY/DR6tJBJOTDhdAAcHJ8Vbr2eFnqaxeca4+t0i9KBf+uHYGWwZORg==}
 
   '@smithy/core@3.36.2':
     resolution: {integrity: sha512-oRw0rB9QSUiCZfEs23G5F4Af+b2rQt1lItIICWu5IejFNd+uPM8SWqiKLMpQ6bX1Q7slsLbjuoE2niErFtkVPQ==}
@@ -1048,6 +1183,9 @@ packages:
   openapi3-ts@4.6.2:
     resolution: {integrity: sha512-gyyil3DweqhXiEhTqtAs9wwRLfWHmetwhI4kmM5Rn0d6gtmK863Ki7qqbQnp9+Wwlqoe3B1LFWj7kMp5ctE4rQ==}
 
+  otplib@13.5.0:
+    resolution: {integrity: sha512-RpcC6aq4rANX6MverMuU3pqHVLgMPO7vl6qR8ga7YzoEHlPJknJ58cSVAaf3jBYnasiQVQHXXl2mj/4pYlsVEQ==}
+
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
 
@@ -1202,6 +1340,17 @@ snapshots:
     dependencies:
       openapi3-ts: 4.6.2
       zod: 4.6.7
+
+  '@aws-sdk/client-cognito-identity-provider@3.1146.0':
+    dependencies:
+      '@aws-sdk/core': 3.978.5
+      '@aws-sdk/credential-provider-node': 3.972.88
+      '@aws-sdk/types': 3.975.0
+      '@smithy/core': 3.36.2
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/node-http-handler': 4.12.1
+      '@smithy/types': 4.19.0
+      tslib: 2.8.1
 
   '@aws-sdk/client-dynamodb@3.1146.0':
     dependencies:
@@ -1533,6 +1682,35 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
+  '@noble/hashes@2.4.0': {}
+
+  '@otplib/core@13.5.0': {}
+
+  '@otplib/hotp@13.5.0':
+    dependencies:
+      '@otplib/core': 13.5.0
+      '@otplib/uri': 13.5.0
+
+  '@otplib/plugin-base32-scure@13.5.0':
+    dependencies:
+      '@otplib/core': 13.5.0
+      '@scure/base': 2.4.0
+
+  '@otplib/plugin-crypto-noble@13.5.0':
+    dependencies:
+      '@noble/hashes': 2.4.0
+      '@otplib/core': 13.5.0
+
+  '@otplib/totp@13.5.0':
+    dependencies:
+      '@otplib/core': 13.5.0
+      '@otplib/hotp': 13.5.0
+      '@otplib/uri': 13.5.0
+
+  '@otplib/uri@13.5.0':
+    dependencies:
+      '@otplib/core': 13.5.0
+
   '@oxc-project/types@0.155.0': {}
 
   '@rolldown/binding-android-arm-eabi@1.2.15':
@@ -1581,6 +1759,8 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.1': {}
+
+  '@scure/base@2.4.0': {}
 
   '@smithy/core@3.36.2':
     dependencies:
@@ -1823,6 +2003,15 @@ snapshots:
   openapi3-ts@4.6.2:
     dependencies:
       yaml: 2.9.1
+
+  otplib@13.5.0:
+    dependencies:
+      '@otplib/core': 13.5.0
+      '@otplib/hotp': 13.5.0
+      '@otplib/plugin-base32-scure': 13.5.0
+      '@otplib/plugin-crypto-noble': 13.5.0
+      '@otplib/totp': 13.5.0
+      '@otplib/uri': 13.5.0
 
   picocolors@1.1.1: {}
 

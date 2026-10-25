@@ -1,0 +1,23 @@
+{
+  "name": "@fisio/seed",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "`pnpm seed`: the therapist (through the bootstrap CLI) and a dozen clients on the local stack.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@aws-sdk/lib-dynamodb": "3.1146.0",
+    "@fisio/api": "workspace:*",
+    "@fisio/auth-emulator": "workspace:*",
+    "@fisio/bootstrap": "workspace:*",
+    "@fisio/contracts": "workspace:*",
+    "@fisio/domain": "workspace:*",
+    "@fisio/infra": "workspace:*",
+    "@fisio/local": "workspace:*"
+  },
+  "devDependencies": {
+    "@fisio/testkit": "workspace:*"
+  }
+}
