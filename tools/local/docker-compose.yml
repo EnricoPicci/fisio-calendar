@@ -6,7 +6,7 @@ name: fisio-local
 services:
   dynamodb:
     # Pinned by digest as well as tag (Dependabot's docker-compose updates bump both).
-    image: amazon/dynamodb-local:3.3.1@sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab
+    image: amazon/dynamodb-local:3.3.2@sha256:6ada631ec7aa5fc83446855eb17233e3dad184fec47477e8140c6c569cfe0c86
     # -sharedDb: one database for every access key and region, so the API, the tools and the
     # specs see the same tables. -inMemory: nothing survives `local:down`; `pnpm seed` rebuilds.
     command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
