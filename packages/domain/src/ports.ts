@@ -1,8 +1,8 @@
 /**
  * Ports to the outside world that more than one package implements (docs/architecture.md §4.1,
- * principle 6); `Clock` lives in clock.ts. They sit here, free of I/O, so the API, the local
- * runtime and the testkit doubles (`FakeChannel`) share one contract and the testkit never
- * depends on `apps/api`. WP0.6 adds the notifier that uses them.
+ * principle 6); `Clock` lives in clock.ts, `IdentityProvider` in identity.ts. They sit here, free
+ * of I/O, so the API, the local runtime and the testkit doubles (`FakeChannel`) share one contract
+ * and the testkit never depends on `apps/api`. WP0.6 adds the notifier that uses them.
  */
 
 /** The Lambda functions the API and the jobs handler start without waiting for them. */

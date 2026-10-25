@@ -13,7 +13,7 @@ import {
 } from '@fisio/testkit';
 import type { AuthDeps } from '../src/http/access';
 import { API_BASE_PATH, type AppOptions, createApp } from '../src/http/app';
-import { createTokenVerifier } from '../src/identity/token-verifier';
+import { createTokenVerifier, type TokenVerifier } from '../src/identity/token-verifier';
 import { type ClientRecord, ClientRepository } from '../src/repo/clients';
 import { SettingsRepository } from '../src/repo/settings';
 
@@ -40,7 +40,13 @@ export interface CallResult {
   readonly body: any;
 }
 
-export function apiHarness(options: AppOptions & { issuer?: TestTokenIssuer } = {}) {
+export interface HarnessOptions extends AppOptions {
+  readonly issuer?: TestTokenIssuer;
+  /** Replaces the testkit issuer's verifier, e.g. with one for the auth emulator's tokens. */
+  readonly tokens?: (context: { clock: FixedClock; tenantId: TenantId }) => TokenVerifier;
+}
+
+export function apiHarness(options: HarnessOptions = {}) {
   const clock = new FixedClock(SPEC_NOW);
   const issuer = options.issuer ?? new TestTokenIssuer();
   const doc = testDocumentClient();
@@ -49,10 +55,12 @@ export function apiHarness(options: AppOptions & { issuer?: TestTokenIssuer } = 
   const settings = new SettingsRepository(doc, TEST_TABLE);
   const loggedErrors: unknown[] = [];
   const auth: AuthDeps = {
-    tokens: createTokenVerifier(
-      { issuer: TEST_ISSUER, jwksUri: TEST_JWKS_URI, clientId: TEST_CLIENT_ID },
-      { clock, fetcher: issuer.fetcher },
-    ),
+    tokens:
+      options.tokens?.({ clock, tenantId }) ??
+      createTokenVerifier(
+        { issuer: TEST_ISSUER, jwksUri: TEST_JWKS_URI, clientId: TEST_CLIENT_ID },
+        { clock, fetcher: issuer.fetcher },
+      ),
     clients,
     settings,
   };

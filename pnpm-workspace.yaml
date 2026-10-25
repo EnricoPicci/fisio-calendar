@@ -3,6 +3,8 @@ packages:
   - packages/*
   - infra
   - tools/local
+  - tools/local/auth-emulator
+  - tools/local/seed
   - tools/bootstrap
   - e2e
   - tools/scripts

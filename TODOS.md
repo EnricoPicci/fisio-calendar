@@ -216,6 +216,186 @@
 **Priority:** P4
 **Depends on:** None.
 
+### Tie the bootstrap CLI's Cognito pool to its stage
+
+**What:** Have `bootstrap:therapist --stage dev|prod` read the pool id (and the SPA origin) from the stage's stack outputs, or check the pool's name or tag against `--stage`, instead of trusting `COGNITO_USER_POOL_ID` from the shell. Ask for confirmation on `prod`.
+
+**Why:** A prod pool id left in the shell would make `--stage dev` reset the prod therapist's setup (a new temporary password) while writing Settings to the dev table. Since WP0.5 the region comes from the pool id and `WEB_ORIGIN` must be https, but nothing ties the pool to the stage.
+
+**Context:** Adversarial finding in the WP0.5 `/review`. The stacks and their outputs arrive in WP0.9; the first real run is WP0.10.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9.
+
+### Repair a Cognito user left without a role group
+
+**What:** Have `CognitoIdentityProvider.findUserByEmail` report a user in no role group as its own state (or a typed error), and let `createUser` / `bootstrap:therapist` add the missing group, which is safe to repeat. At the least, give the "is in no role group" error the same "delete it, then retry" hint as the rollback's AggregateError.
+
+**Why:** `createUser` rolls back only when `AdminAddUserToGroup` throws. If the process dies between the two calls, or the SDK retries an `AdminCreateUser` that Cognito already applied (`UsernameExistsException` on the retry), the user stays without a group. Every later bootstrap run then fails at its first lookup, before it could add the group, until someone deletes the user by hand. This is not the settled race (where the concurrent run's group add lands).
+
+**Context:** Claude adversarial finding in the WP0.5 `/ship` (run 2), after the last review cycle. It matters for the one-time prod bootstrap (WP0.10).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None.
+
+### Close the base DynamoDB clients in the CLIs
+
+**What:** In `tools/bootstrap/src/cli.ts` and `tools/local/seed/src/seed.ts`, keep the `DynamoDBClient` the document client wraps and call `destroy()` on it. `DynamoDBDocumentClient.destroy()` is empty in lib-dynamodb 3.1146.0, so `doc.destroy()` closes nothing (the Cognito client is closed).
+
+**Why:** Idle keep-alive sockets are unref'd, so a one-shot CLI exits today. Anything that builds these adapters repeatedly (a spec, a long-lived process) would leak them.
+
+**Context:** Claude adversarial finding in the WP0.5 `/ship` (run 2).
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### Main-module check through a symlinked path
+
+**What:** Compare `realpathSync(process.argv[1])` with `fileURLToPath(import.meta.url)` in the "run as a script" checks of `tools/bootstrap/src/cli.ts`, `tools/local/seed/src/seed.ts`, `tools/local/auth-emulator/src/server.ts` and `apps/api/src/runtime/local.ts`.
+
+**Why:** `import.meta.url` is the real path, `argv[1]` may not be. Run from a checkout reached through a symlink, `pnpm bootstrap:therapist` and `pnpm seed` exit 0 having done nothing.
+
+**Context:** Claude adversarial finding in the WP0.5 `/ship` (run 2); the pattern predates WP0.5 in `local.ts`.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### Sign-in lockout as a denial of service
+
+**What:** Decide how the lockout is keyed. Today five wrong codes or passwords for one email lock that email for 15 minutes, and the code and password flows share the counter. Anyone who knows an address can keep a client, or the therapist, locked out by repeating that every 15 minutes. While locked, a client asking for a code gets the normal answer and no email. Options: count per session or user, keep code failures out of the password flow, add a per-IP WAF rate rule on the sign-in endpoints, and design the SPA's "locked" message with a C1 journey.
+
+**Why:** The rule mirrors Cognito, which also locks per user, so changing the emulator alone would make it drift from the cloud. Whatever is chosen must hold on both.
+
+**Context:** Red-team finding in the WP0.5 `/review`. The WAF rules are WP0.9; the SPA's sign-in pages are WP0.7.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** WP0.7, WP0.9.
+
+### Refresh-token reuse grace period
+
+**What:** Pin the app client's refresh-token rotation grace period (`RetryGracePeriodSeconds`) in WP0.9. Then either give the emulator the same window, with a contract row ("a refresh token reused within the grace period succeeds once"), or have the SPA serialise refreshes across tabs (a Web Lock or BroadcastChannel) and cover that with a journey.
+
+**Why:** The emulator spends a refresh token on first use. Two tabs, or a retry after a timeout, that refresh with the same token sign the user out locally, while Cognito with a grace period would accept both. The SPA's refresh handling would be built against the stricter rule.
+
+**Context:** Red-team finding in the WP0.5 `/review`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.7, WP0.9.
+
+### The seed reconciles existing clients
+
+**What:** Make `pnpm seed` bring an existing client back to its seeded state: enable or disable the identity to match `status`, and correct the client item, instead of skipping any client that already exists.
+
+**Why:** A client blocked or edited by hand during local testing stays that way after a re-seed, so "a re-run changes nothing" also means "a re-run repairs nothing". `pnpm local:down && pnpm local:up` is the reset today.
+
+**Context:** Adversarial finding in the WP0.5 `/review`.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### One therapist per pool
+
+**What:** Have `bootstrap:therapist` refuse a second therapist. Before creating a user, look for any member of the `therapist` group (a new port method: Cognito `ListUsersInGroup`, an emulator pool-level item), and refuse with `BootstrapError` when one exists under another email, unless an explicit flag replaces her. Add a contract row and a bootstrap row.
+
+**Why:** Bootstrap is idempotent per email only. A mistyped `--email` on `prod` creates a second account with full therapist rights (the API trusts the role claim), against §1 "one therapist" and §11.5 "never duplicates".
+
+**Context:** Red-team finding in the WP0.5 `/ship` review; deferred because it adds a port method to both adapters (never widen a WP).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.10 (first real run).
+
+### Concurrent guesses beyond the lockout
+
+**What:** Make the emulator reserve an attempt before it checks a code (an update conditioned on no live lock and `failures < max`), and let a success clear only its own reservation, so a burst of parallel answers is held to the 5-attempt limit and a right guess inside it cannot erase the lock.
+
+**Why:** Today every answer of a burst passes the lock check before any failure lands, so the lockout limits bursts, not guesses, and `clearAttempts` on a success deletes a lock the concurrent failures just set. The emulator only; Cognito enforces its own limits.
+
+**Context:** Red-team finding in the WP0.5 `/ship` review. Interacts with "Sign-in lockout as a denial of service" above.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
+### One password policy for the emulator and the pool
+
+**What:** Write the therapist's password policy in `packages/contracts` (`MIN_PASSWORD_LENGTH` plus any character-class rules), make the emulator enforce exactly that, and pin the WP0.9 pool's `PasswordPolicy` to it (for example class requirements off if 12+ characters is the policy). Add a spec row for a long password without the classes.
+
+**Why:** The emulator accepts any 12-character password, while Cognito's default policy also requires upper and lower case, digits and symbols: the setup page would fail only in the cloud.
+
+**Context:** API-contract finding in the WP0.5 `/ship` review.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9.
+
+### Cognito exceptions onto the sign-in codes
+
+**What:** Before the SPA's `CognitoAuthService` (WP0.7), list which Cognito exception (and challenge) maps to each `AuthErrorCode`. Where Cognito cannot tell two cases apart without its message text (an expired challenge session and a wrong password are both `NotAuthorizedException`), collapse them in the emulator too or mark the code emulator-only. Align `otpValiditySeconds` with the pool's `AuthSessionValidity` (default 3 minutes) in WP0.9.
+
+**Why:** View-models and journeys built on the emulator's finer codes could expect outcomes the cloud adapter cannot produce.
+
+**Context:** API-contract finding in the WP0.5 `/ship` review.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.7, WP0.9.
+
+### Code delivery must not time the answer
+
+**What:** When WP0.6 swaps `consoleChannel` for `SmtpEmailChannel`, stop `startEmailOtp` from awaiting the delivery (hand it to the outbox or fire it off), and run the lockout read for every email, so the answer takes the same time for clients and strangers.
+
+**Why:** Only an enabled client's request waits on the channel; with a real SMTP round trip the response time tells clients from strangers, against C1's no-enumeration rule.
+
+**Context:** Red-team finding in the WP0.5 `/ship` review.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.6.
+
+### Local overrides reach every local process
+
+**What:** Load `.env.local` in `tools/scripts/dev.mjs` before it spawns the processes, and in the seed and `bootstrap:therapist --stage local`, or have them read the table and endpoint from the API's `loadConfig`.
+
+**Why:** Only the API reads `.env.local`. With a `TABLE_NAME` or `DYNAMODB_ENDPOINT` override there, the emulator, seed and bootstrap write to a different table than the API reads, and every call answers 401/403 with no hint why.
+
+**Context:** Red-team finding in the WP0.5 `/ship` review.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### Revoke the therapist's access token
+
+**What:** Decide whether a block or a global sign-out must also stop the therapist's access tokens already issued. Options: a stored `signedOutAt` that `authorize` (`apps/api/src/http/access.ts`) compares with the token's `auth_time`, or a shorter access-token lifetime for the therapist's app client.
+
+**Why:** The API verifies access tokens offline, so `AdminUserGlobalSignOut` and `AdminDisableUser` end only the refresh tokens for it. Clients are covered by the per-request status check; the therapist's check only asks whether the Settings item exists, so a session opened in the password-only window, or a blocked therapist, keeps API access for up to 60 minutes.
+
+**Context:** Red-team finding in the WP0.5 `/ship` review (cycle 2).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9.
+
+### A spec for the bootstrap CLI's run
+
+**What:** Let `runBootstrapCli` take its adapters (or an adapters factory), then spec exit 0 with the printed link, the "no setup link" and "re-enabled" lines, and exit 1 on a `BootstrapError`.
+
+**Why:** Only the argument and environment checks (exit 2) are specced; the output and exit codes of the run the therapist's onboarding depends on are not.
+
+**Context:** Testing finding in the WP0.5 `/ship` review.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
 ## Web app
 
 ### Installable PWA

@@ -1,4 +1,8 @@
-// bootstrap:therapist CLI over the IdentityProvider port (local, dev, prod).
-// Placeholder so the package type-checks; replaced by the work packages that own it
-// (docs/implementation-plan.md).
-export {};
+// bootstrap:therapist (docs/architecture.md §11.5): the function the CLI and the seed run.
+export {
+  type BootstrapDeps,
+  BootstrapError,
+  type BootstrapInput,
+  type BootstrapResult,
+  bootstrapTherapist,
+} from './bootstrap';

@@ -142,7 +142,33 @@
     ".claude/hooks/lib/cdk-gate.mjs": [
       "tools/scripts/test/block-cdk-deploy.spec.ts",
       "tools/scripts/test/on-ts-edit.spec.ts"
-    ]
+    ],
+    "apps/api/src/identity/index.ts": [
+      "apps/api/test/identity/cognito-identity-provider.spec.ts",
+      "apps/api/test/emulator-tokens.spec.ts"
+    ],
+    "tools/bootstrap/vitest.config.ts": ["tools/bootstrap/test/bootstrap.spec.ts"],
+    "tools/local/auth-emulator/package.json": [
+      "tools/local/auth-emulator/test/sign-in.spec.ts",
+      "tools/local/auth-emulator/test/server.spec.ts"
+    ],
+    "tools/local/auth-emulator/src/index.ts": [
+      "tools/local/auth-emulator/test/sign-in.spec.ts",
+      "tools/local/auth-emulator/test/server.spec.ts",
+      "apps/api/test/identity/IdentityProvider.contract.spec.ts"
+    ],
+    "tools/local/auth-emulator/tsconfig.json": [
+      "tools/local/auth-emulator/test/sign-in.spec.ts",
+      "tools/local/auth-emulator/test/server.spec.ts"
+    ],
+    "tools/local/auth-emulator/vitest.config.ts": [
+      "tools/local/auth-emulator/test/sign-in.spec.ts",
+      "tools/local/auth-emulator/test/server.spec.ts"
+    ],
+    "tools/local/seed/package.json": ["tools/local/seed/test/seed.spec.ts"],
+    "tools/local/seed/tsconfig.json": ["tools/local/seed/test/seed.spec.ts"],
+    "tools/local/seed/vitest.config.ts": ["tools/local/seed/test/seed.spec.ts"],
+    "tools/scripts/dev.mjs": []
   },
   "guards": [
     {
