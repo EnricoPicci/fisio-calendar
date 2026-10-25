@@ -54,4 +54,30 @@ describe('Auth emulator over HTTP (pnpm dev, architecture §11.4)', () => {
       body: { code: 'validation_failed' },
     });
   });
+
+  // Value: protects=a page on another site cannot send codes or lock seeded accounts through the developer's browser; fails_when=a foreign origin or a text/plain "simple" POST reaches a handler; why_new=red-team finding (WP0.5); seam=FakeChannel; no_claim=browser local-network protections
+  it('refuses a foreign browser origin and a POST that is not JSON, before any handler runs', async () => {
+    const user = await h.client();
+    const sent = h.channel.sentTo(user.email).length;
+    const attempt = (headers: Record<string, string>) =>
+      app.request(`${base}/email-otp`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ email: user.email }),
+      });
+    const foreign = await attempt({
+      origin: 'https://evil.example',
+      'content-type': 'application/json',
+    });
+    expect([foreign.status, await foreign.json()]).toEqual([403, { code: 'forbidden_origin' }]);
+    const plain = await attempt({ 'content-type': 'text/plain' });
+    expect([plain.status, await plain.json()]).toEqual([400, { code: 'validation_failed' }]);
+    expect(h.channel.sentTo(user.email)).toHaveLength(sent);
+
+    const local = await attempt({
+      origin: 'http://127.0.0.1:5173',
+      'content-type': 'application/json',
+    });
+    expect(local.status).toBe(200);
+  });
 });

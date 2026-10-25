@@ -30,6 +30,8 @@ export function emulatorHarness() {
     await t.identity.setTotpPreference(user.userId, { enabled: true, preferred: true });
     const setupCode = await t.identity.startPasswordSetup(user.userId);
     const { secret } = await t.completeSetup(setupCode, THERAPIST_PASSWORD);
+    // The enrolment spent this 30-second step's code: the next sign-in needs the next one.
+    clock.advance({ seconds: 30 });
     return { ...user, secret };
   }
 

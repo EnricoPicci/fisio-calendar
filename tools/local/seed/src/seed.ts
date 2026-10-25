@@ -1,8 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import { ClientRepository } from '@fisio/api/repo/clients';
 import { SettingsRepository } from '@fisio/api/repo/settings';
-import { consoleChannel, createLocalEmulator, DEFAULT_EMULATOR_CONFIG } from '@fisio/auth-emulator';
-import { createTestEmulator } from '@fisio/auth-emulator/testing';
+import { createLocalEmulator, LOCAL_SETUP_URL, LocalIdentityProvider } from '@fisio/auth-emulator';
+import { completeSetup } from '@fisio/auth-emulator/testing';
 import { bootstrapTherapist } from '@fisio/bootstrap';
 import {
   ClientIdSchema,
@@ -104,11 +104,11 @@ export async function seedLocal(deps: SeedDeps): Promise<SeedReport> {
   const result = await bootstrapTherapist(deps, {
     email: SEED_THERAPIST_EMAIL,
     tenantId: deps.tenantId,
-    setupUrl: 'http://127.0.0.1:5173/setup',
+    setupUrl: LOCAL_SETUP_URL,
   });
   let credentials: SeedReport['therapist']['credentials'];
   if (result.setupLink) {
-    const code = new URL(result.setupLink).searchParams.get('code') ?? '';
+    const code = new URLSearchParams(new URL(result.setupLink).hash.slice(1)).get('code') ?? '';
     const { secret, otpauthUri } = await deps.completeSetup(code, SEED_THERAPIST_PASSWORD);
     credentials = { password: SEED_THERAPIST_PASSWORD, totpSecret: secret, otpauthUri };
   }
@@ -137,23 +137,16 @@ export async function seedLocal(deps: SeedDeps): Promise<SeedReport> {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { doc } = createLocalEmulator();
+  const { doc, store, config, emulator } = createLocalEmulator();
   const table = tableName('local');
-  const t = createTestEmulator({
-    doc,
-    table,
-    clock: systemClock,
-    channel: consoleChannel,
-    config: DEFAULT_EMULATOR_CONFIG,
-  });
   try {
     const report = await seedLocal({
-      identity: t.identity,
+      identity: new LocalIdentityProvider(store, systemClock, config),
       clients: new ClientRepository(doc, table),
       settings: new SettingsRepository(doc, table),
       clock: systemClock,
       tenantId: TenantIdSchema.parse(DEFAULT_TENANT_ID),
-      completeSetup: t.completeSetup,
+      completeSetup: (code, password) => completeSetup(emulator, systemClock, code, password),
     });
     const { credentials } = report.therapist;
     console.log(`Therapist: ${report.therapist.email}`);

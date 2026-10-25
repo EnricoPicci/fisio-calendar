@@ -5,17 +5,18 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { CognitoIdentityProvider } from '@fisio/api/identity';
 import { SettingsRepository } from '@fisio/api/repo/settings';
-import { createLocalEmulator, LocalIdentityProvider } from '@fisio/auth-emulator';
-import { DEFAULT_TENANT_ID, TenantIdSchema } from '@fisio/contracts';
+import { createLocalEmulator, LOCAL_SETUP_URL, LocalIdentityProvider } from '@fisio/auth-emulator';
+import { DEFAULT_TENANT_ID, type TenantId, TenantIdSchema } from '@fisio/contracts';
 import { systemClock } from '@fisio/domain';
 import { tableName } from '@fisio/infra/table-definition';
 import { type BootstrapDeps, bootstrapTherapist } from './bootstrap';
 
 /**
- * `pnpm bootstrap:therapist --stage local|dev|prod --email <addr> [--tenant <id>]`
- * (docs/architecture.md §11.5). `local` writes to the emulator and the `fisio-local` table on
- * DynamoDB Local; `dev` and `prod` use the stage's Cognito pool (`COGNITO_USER_POOL_ID`), its
- * table and the SPA origin (`WEB_ORIGIN`) with the caller's AWS credentials.
+ * `pnpm bootstrap:therapist --stage local|dev|prod --email <addr>` (docs/architecture.md §11.5),
+ * for the single tenant (`main`, the `tenantId` claim the pool's trigger adds). `local` writes to
+ * the emulator and the `fisio-local` table on DynamoDB Local; `dev` and `prod` use the stage's
+ * Cognito pool (`COGNITO_USER_POOL_ID`, whose id names its region), its table and the SPA origin
+ * (`WEB_ORIGIN`) with the caller's AWS credentials.
  */
 export const BOOTSTRAP_STAGES = ['local', 'dev', 'prod'] as const;
 export type BootstrapStage = (typeof BOOTSTRAP_STAGES)[number];
@@ -23,22 +24,19 @@ export type BootstrapStage = (typeof BOOTSTRAP_STAGES)[number];
 export interface BootstrapArgs {
   readonly stage: BootstrapStage;
   readonly email: string;
-  readonly tenant: string;
 }
 
-export const USAGE =
-  'Usage: pnpm bootstrap:therapist --stage local|dev|prod --email <address> [--tenant <id>]';
+export const USAGE = 'Usage: pnpm bootstrap:therapist --stage local|dev|prod --email <address>';
 
 /** The command line, or an error message naming what is wrong. */
 export function parseBootstrapArgs(argv: readonly string[]): BootstrapArgs | { error: string } {
-  let values: { stage?: string; email?: string; tenant?: string };
+  let values: { stage?: string; email?: string };
   try {
     ({ values } = parseArgs({
       args: [...argv],
       options: {
         stage: { type: 'string' },
         email: { type: 'string' },
-        tenant: { type: 'string', default: DEFAULT_TENANT_ID },
       },
       strict: true,
       allowPositionals: false,
@@ -49,14 +47,13 @@ export function parseBootstrapArgs(argv: readonly string[]): BootstrapArgs | { e
   const stage = BOOTSTRAP_STAGES.find((name) => name === values.stage);
   if (!stage) return { error: '--stage must be local, dev or prod' };
   if (!values.email) return { error: '--email is required' };
-  if (!TenantIdSchema.safeParse(values.tenant).success) {
-    return { error: '--tenant may hold letters, digits and dashes only' };
-  }
-  return { stage, email: values.email, tenant: values.tenant ?? DEFAULT_TENANT_ID };
+  return { stage, email: values.email };
 }
 
-/** The local SPA's setup page (Vite, WP0.7). */
-const LOCAL_SETUP_URL = 'http://127.0.0.1:5173/setup';
+const TENANT_ID: TenantId = TenantIdSchema.parse(DEFAULT_TENANT_ID);
+
+/** A pool id is `<region>_<id>`, so the pool, not the shell's default region, picks the region. */
+const POOL_ID = /^([a-z]{2}(?:-[a-z]+)+-\d)_[A-Za-z0-9]+$/;
 
 function adaptersFor(
   stage: BootstrapStage,
@@ -81,7 +78,9 @@ function adaptersFor(
       `--stage ${stage} needs COGNITO_USER_POOL_ID and WEB_ORIGIN in the environment`,
     );
   }
-  const region = env.AWS_REGION || 'eu-central-1';
+  const region = POOL_ID.exec(poolId)?.[1];
+  if (!region) throw new Error(`COGNITO_USER_POOL_ID ${poolId} is not a user pool id`);
+  if (new URL(origin).protocol !== 'https:') throw new Error('WEB_ORIGIN must be https');
   const cognito = new CognitoIdentityProviderClient({ region });
   const doc = DynamoDBDocumentClient.from(new DynamoDBClient({ region }), {
     marshallOptions: { removeUndefinedValues: true },
@@ -121,17 +120,18 @@ export async function runBootstrapCli(
   try {
     const result = await bootstrapTherapist(adapters.deps, {
       email: args.email,
-      tenantId: TenantIdSchema.parse(args.tenant),
+      tenantId: TENANT_ID,
       setupUrl: adapters.setupUrl,
     });
     print(
       `Therapist ${result.email} ${result.created ? 'created' : 'already exists'} on ${args.stage} (user ${result.userId}).`,
     );
-    print(`TOTP MFA: enabled and preferred. Settings: present for tenant ${args.tenant}.`);
+    if (result.reenabled) print('The account was disabled and has been enabled again.');
+    print(`TOTP MFA preference: enabled and preferred. Settings: present for tenant ${TENANT_ID}.`);
     print(
       result.setupLink
-        ? `One-time setup link (choose the password, enrol TOTP):\n${result.setupLink}`
-        : 'Password already chosen: no setup link.',
+        ? `Setup not finished. One-time link (choose the password, enrol TOTP); it replaces any earlier link:\n${result.setupLink}`
+        : 'Password chosen and TOTP enrolled: no setup link.',
     );
     return 0;
   } catch (error) {

@@ -7,7 +7,7 @@ import {
   type NewIdentityUser,
   type TotpPreference,
 } from '@fisio/domain';
-import type { EmulatorConfig } from './config';
+import { type EmulatorConfig, MS_PER_DAY } from './config';
 import { randomToken, sha256 } from './secrets';
 import type { EmulatorStore, StoredUser } from './store';
 
@@ -43,8 +43,9 @@ export class LocalIdentityProvider implements IdentityProvider {
     return user ? toIdentityUser(user) : undefined;
   }
 
+  /** Like Cognito's `AdminDisableUser`, also ends every refresh token issued so far. */
   async disableUser(userId: string): Promise<void> {
-    await this.store.updateUser(userId, { enabled: false });
+    await this.store.bumpTokenGeneration(userId, { enabled: false });
   }
 
   async enableUser(userId: string): Promise<void> {
@@ -56,8 +57,7 @@ export class LocalIdentityProvider implements IdentityProvider {
   }
 
   async globalSignOut(userId: string): Promise<void> {
-    const user = await this.#user(userId);
-    await this.store.updateUser(userId, { tokenGeneration: user.tokenGeneration + 1 });
+    await this.store.bumpTokenGeneration(userId);
   }
 
   async setTotpPreference(userId: string, preference: TotpPreference): Promise<void> {
@@ -71,7 +71,7 @@ export class LocalIdentityProvider implements IdentityProvider {
     await this.#user(userId);
     const code = randomToken();
     const expiresAt = new Date(
-      this.clock.now().getTime() + this.config.setupCodeDays * 86_400_000,
+      this.clock.now().getTime() + this.config.setupCodeDays * MS_PER_DAY,
     ).toISOString();
     // One live code per user: the setup record is keyed by the code, so the user item remembers
     // the current one and an older code is refused when it is used.
@@ -100,5 +100,6 @@ export function toIdentityUser(user: StoredUser): IdentityUser {
     enabled: user.enabled,
     passwordSet: user.passwordHash !== undefined,
     totp: { enabled: user.totpEnabled, preferred: user.totpPreferred },
+    totpEnrolled: user.totpSecret !== undefined,
   };
 }

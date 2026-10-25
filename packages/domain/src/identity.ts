@@ -26,7 +26,10 @@ export interface IdentityUser {
   readonly enabled: boolean;
   /** True once the user chose a password through the setup link (the therapist only). */
   readonly passwordSet: boolean;
+  /** The MFA preference, which may be set before any authenticator is enrolled. */
   readonly totp: TotpPreference;
+  /** True once an authenticator app has been enrolled and verified with a first code. */
+  readonly totpEnrolled: boolean;
 }
 
 export interface NewIdentityUser {
@@ -43,7 +46,10 @@ export interface IdentityProvider {
   createUser(user: NewIdentityUser): Promise<IdentityUser>;
   /** The user with this email, or undefined. */
   findUserByEmail(email: string): Promise<IdentityUser | undefined>;
-  /** Refuses sign-in and token refresh from now on. Idempotent. */
+  /**
+   * Refuses sign-in and token refresh from now on, and revokes the refresh tokens issued so far
+   * (Cognito's `AdminDisableUser`): enabling the user again does not revive them. Idempotent.
+   */
   disableUser(userId: string): Promise<void>;
   enableUser(userId: string): Promise<void>;
   deleteUser(userId: string): Promise<void>;

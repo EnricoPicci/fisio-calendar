@@ -4,6 +4,9 @@ export {
   type EmulatorConfig,
   LOCAL_EMULATOR_PORT,
   LOCAL_POOL_ID,
+  LOCAL_SETUP_URL,
+  LOCAL_WEB_ORIGINS,
+  MS_PER_DAY,
 } from './config';
 export {
   AuthEmulator,

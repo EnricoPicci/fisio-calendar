@@ -8,7 +8,12 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
-import { DEFAULT_EMULATOR_CONFIG, type EmulatorConfig, LOCAL_EMULATOR_PORT } from './config';
+import {
+  DEFAULT_EMULATOR_CONFIG,
+  type EmulatorConfig,
+  LOCAL_EMULATOR_PORT,
+  LOCAL_WEB_ORIGINS,
+} from './config';
 import { AuthEmulator, AuthError } from './emulator';
 import { RsaSigner } from './jwt';
 import { EmulatorStore } from './store';
@@ -17,7 +22,10 @@ import { EmulatorStore } from './store';
  * The emulator over HTTP, for `pnpm dev` (docs/architecture.md §11.4): the JWKS the API verifies
  * against and the sign-in steps the SPA's `LocalAuthService` (WP0.7) calls. Routes sit under the
  * issuer's path, so `<issuer>/.well-known/jwks.json` is the JWKS, as on Cognito. A refused step
- * answers 400 `{ code }` with an auth error code; nothing else is ever in the body.
+ * answers 400 `{ code }` with an `AuthErrorCode`. Three answers are not sign-in outcomes and carry
+ * a code outside that list: 400 `validation_failed` (a malformed body, or a POST that is not
+ * `application/json`), 403 `forbidden_origin` (a browser origin other than the Vite dev server),
+ * 404 `not_found`; and 500 `internal_error`. `LocalAuthService` (WP0.7) treats them as unexpected.
  */
 const EmailBody = z.object({ email: z.string().min(1).max(320) }).strict();
 const AnswerBody = z
@@ -31,13 +39,22 @@ const SetupBody = z
   .strict();
 const RefreshBody = z.object({ refreshToken: z.string().min(1).max(256) }).strict();
 
-/** The Vite dev server (WP0.7), the only browser origin that calls the emulator. */
-const DEV_ORIGINS = ['http://127.0.0.1:5173', 'http://localhost:5173'];
-
 export function createEmulatorApp(emulator: AuthEmulator, config: EmulatorConfig): Hono {
   const base = new URL(config.issuer).pathname.replace(/\/+$/, '');
   const app = new Hono();
-  app.use('*', cors({ origin: DEV_ORIGINS, allowMethods: ['GET', 'POST'] }));
+  app.use('*', cors({ origin: LOCAL_WEB_ORIGINS, allowMethods: ['GET', 'POST'] }));
+  // CORS only hides answers from other origins; these refuse the request itself, so a page on
+  // another site cannot send codes or lock seeded accounts with a "simple" text/plain POST.
+  app.use('*', async (c, next) => {
+    const origin = c.req.header('origin');
+    if (origin && !LOCAL_WEB_ORIGINS.includes(origin)) {
+      return c.json({ code: 'forbidden_origin' }, 403);
+    }
+    if (c.req.method === 'POST' && !c.req.header('content-type')?.startsWith('application/json')) {
+      return c.json({ code: 'validation_failed' }, 400);
+    }
+    return next();
+  });
 
   const routes = new Hono();
   routes.get('/.well-known/jwks.json', (c) => c.json(emulator.jwks));

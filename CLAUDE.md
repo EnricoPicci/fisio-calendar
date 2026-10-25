@@ -19,7 +19,7 @@ locally. The design is `docs/architecture.md`; the work breakdown is `docs/imple
 | `pnpm typecheck` / `pnpm lint` / `pnpm lint:fix` | `tsc --noEmit` per package / Biome check / Biome fix |
 | `pnpm tick --now <iso>` | run the scheduler (`jobs` handler) at a chosen instant |
 | `pnpm seed` | therapist (via bootstrap, setup completed: prints password and TOTP secret) + a dozen clients on the local stack; rules and slots arrive in WP1.2 |
-| `pnpm bootstrap:therapist --stage local\|dev\|prod` | the only way to create the therapist account |
+| `pnpm bootstrap:therapist --stage local\|dev\|prod --email <addr>` | the only way to create the therapist account; prints a one-time setup link until she has a password and an enrolled authenticator (`dev`/`prod` need `COGNITO_USER_POOL_ID` and `WEB_ORIGIN`) |
 | `pnpm deploy:dev` | `pnpm test` first, then `cdk diff` / `deploy` / smoke on `dev`; refuses when red |
 | `pnpm test:cloud:auth` / `test:cloud:email` | contract specs against the `dev` Cognito pool / SES |
 

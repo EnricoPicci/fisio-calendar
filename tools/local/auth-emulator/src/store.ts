@@ -6,7 +6,12 @@ import {
   TransactWriteCommand,
   UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
-import { IDENTITY_ROLES, IdentityUserExistsError, IdentityUserNotFoundError } from '@fisio/domain';
+import {
+  IDENTITY_ROLES,
+  IdentityUserExistsError,
+  IdentityUserNotFoundError,
+  isErrorNamed,
+} from '@fisio/domain';
 import { z } from 'zod';
 import { attemptsSk, emailSk, poolPk, refreshSk, sessionSk, setupSk, userSk } from './keys';
 
@@ -24,10 +29,12 @@ export const StoredUserSchema = z.object({
   totpSecret: z.string().optional(),
   totpEnabled: z.boolean(),
   totpPreferred: z.boolean(),
-  /** Bumped by a global sign-out; refresh tokens issued under an older value are refused. */
+  /** Bumped by a global sign-out or a disable; refresh tokens of an older value are refused. */
   tokenGeneration: z.number(),
   /** The one live setup code (its hash); an earlier code is refused. */
   setupCodeHash: z.string().optional(),
+  /** The last accepted TOTP time step: a code is good once, like Cognito's. */
+  lastTotpStep: z.number().optional(),
   createdAt: z.string(),
 });
 export type StoredUser = z.infer<typeof StoredUserSchema>;
@@ -74,7 +81,13 @@ type UserChanges = Partial<Omit<StoredUser, 'userId' | 'email' | 'createdAt'>>;
 const epochSeconds = (iso: string) => Math.ceil(new Date(iso).getTime() / 1000);
 
 const isConditionFailure = (error: unknown) =>
-  (error as { name?: unknown }).name === 'ConditionalCheckFailedException';
+  isErrorNamed(error, 'ConditionalCheckFailedException');
+
+/** A transaction cancelled because its first item's condition failed (not a conflict). */
+const firstConditionFailed = (error: unknown) =>
+  isErrorNamed(error, 'TransactionCanceledException') &&
+  (error as { CancellationReasons?: { Code?: string }[] }).CancellationReasons?.[0]?.Code ===
+    'ConditionalCheckFailed';
 
 export class EmulatorStore {
   readonly #pk: string;
@@ -109,9 +122,7 @@ export class EmulatorStore {
         }),
       );
     } catch (error) {
-      if ((error as { name?: unknown }).name === 'TransactionCanceledException') {
-        throw new IdentityUserExistsError({ cause: error });
-      }
+      if (firstConditionFailed(error)) throw new IdentityUserExistsError({ cause: error });
       throw error;
     }
   }
@@ -157,6 +168,83 @@ export class EmulatorStore {
     }
   }
 
+  /** Ends every refresh token issued so far, atomically (two concurrent bumps both count). */
+  async bumpTokenGeneration(userId: string, changes: { enabled?: boolean } = {}): Promise<void> {
+    try {
+      await this.doc.send(
+        new UpdateCommand({
+          TableName: this.table,
+          Key: { PK: this.#pk, SK: userSk(userId) },
+          UpdateExpression:
+            changes.enabled === undefined
+              ? 'ADD tokenGeneration :one'
+              : 'SET enabled = :enabled ADD tokenGeneration :one',
+          ConditionExpression: 'attribute_exists(PK)',
+          ExpressionAttributeValues: {
+            ':one': 1,
+            ...(changes.enabled === undefined ? {} : { ':enabled': changes.enabled }),
+          },
+        }),
+      );
+    } catch (error) {
+      if (isConditionFailure(error)) throw new IdentityUserNotFoundError({ cause: error });
+      throw error;
+    }
+  }
+
+  /**
+   * Stores the setup's password and TOTP secret if `setupCodeHash` is still the user's live code,
+   * and retires it: of two sessions opened with one code, or one opened with a replaced code,
+   * only a live one wins. False when the code is no longer live.
+   */
+  async completeSetup(
+    userId: string,
+    setupCodeHash: string,
+    fields: { passwordHash: string; totpSecret: string; lastTotpStep: number },
+  ): Promise<boolean> {
+    try {
+      await this.doc.send(
+        new UpdateCommand({
+          TableName: this.table,
+          Key: { PK: this.#pk, SK: userSk(userId) },
+          UpdateExpression:
+            'SET passwordHash = :password, totpSecret = :secret, lastTotpStep = :step REMOVE setupCodeHash',
+          ConditionExpression: 'setupCodeHash = :code',
+          ExpressionAttributeValues: {
+            ':password': fields.passwordHash,
+            ':secret': fields.totpSecret,
+            ':step': fields.lastTotpStep,
+            ':code': setupCodeHash,
+          },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (isConditionFailure(error)) return false;
+      throw error;
+    }
+  }
+
+  /** Records a TOTP time step as used; false when it (or a later one) was already used. */
+  async acceptTotpStep(userId: string, step: number): Promise<boolean> {
+    try {
+      await this.doc.send(
+        new UpdateCommand({
+          TableName: this.table,
+          Key: { PK: this.#pk, SK: userSk(userId) },
+          UpdateExpression: 'SET lastTotpStep = :step',
+          ConditionExpression:
+            'attribute_exists(PK) AND (attribute_not_exists(lastTotpStep) OR lastTotpStep < :step)',
+          ExpressionAttributeValues: { ':step': step },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (isConditionFailure(error)) return false;
+      throw error;
+    }
+  }
+
   async deleteUser(user: StoredUser): Promise<void> {
     await this.doc.send(
       new TransactWriteCommand({
@@ -173,8 +261,58 @@ export class EmulatorStore {
     return item ? AttemptsSchema.parse(item) : undefined;
   }
 
-  async putAttempts(email: string, attempts: Attempts): Promise<void> {
-    await this.#put(attemptsSk(email), attempts, attempts.resetAt);
+  /**
+   * Counts one failure for the email, atomically, and returns the count in the current window
+   * (`windowSeconds` from its first failure): parallel wrong guesses are all counted.
+   */
+  async recordFailure(email: string, now: Date, windowSeconds: number): Promise<number> {
+    const key = { PK: this.#pk, SK: attemptsSk(email) };
+    const resetAt = new Date(now.getTime() + windowSeconds * 1000).toISOString();
+    for (let round = 0; round < 3; round++) {
+      try {
+        const { Attributes } = await this.doc.send(
+          new UpdateCommand({
+            TableName: this.table,
+            Key: key,
+            UpdateExpression: 'ADD failures :one',
+            ConditionExpression: 'resetAt > :now',
+            ExpressionAttributeValues: { ':one': 1, ':now': now.toISOString() },
+            ReturnValues: 'ALL_NEW',
+          }),
+        );
+        return AttemptsSchema.parse(Attributes).failures;
+      } catch (error) {
+        if (!isConditionFailure(error)) throw error;
+      }
+      // No live window: open one, unless a concurrent failure has just done so.
+      try {
+        await this.doc.send(
+          new PutCommand({
+            TableName: this.table,
+            Item: { ...key, failures: 1, resetAt, ttl: epochSeconds(resetAt) },
+            ConditionExpression: 'attribute_not_exists(PK) OR resetAt <= :now',
+            ExpressionAttributeValues: { ':now': now.toISOString() },
+          }),
+        );
+        return 1;
+      } catch (error) {
+        if (!isConditionFailure(error)) throw error;
+      }
+    }
+    throw new Error('The failed-attempt counter stayed contended');
+  }
+
+  /** Locks the email until `lockedUntil`; the count restarts after it. */
+  async lockAttempts(email: string, lockedUntil: string): Promise<void> {
+    await this.doc.send(
+      new UpdateCommand({
+        TableName: this.table,
+        Key: { PK: this.#pk, SK: attemptsSk(email) },
+        UpdateExpression: 'SET lockedUntil = :until, resetAt = :until, #ttl = :ttl',
+        ExpressionAttributeNames: { '#ttl': 'ttl' },
+        ExpressionAttributeValues: { ':until': lockedUntil, ':ttl': epochSeconds(lockedUntil) },
+      }),
+    );
   }
 
   async clearAttempts(email: string): Promise<void> {
@@ -192,6 +330,11 @@ export class EmulatorStore {
 
   async deleteSession(sessionId: string): Promise<void> {
     await this.#delete(sessionSk(sessionId));
+  }
+
+  /** Removes a session once; false when a concurrent answer already spent it. */
+  async takeSession(sessionId: string): Promise<boolean> {
+    return this.#deleteExisting(sessionSk(sessionId));
   }
 
   async putRefresh(tokenHash: string, record: RefreshRecord): Promise<void> {

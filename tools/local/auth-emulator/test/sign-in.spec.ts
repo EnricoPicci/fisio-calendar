@@ -1,11 +1,13 @@
 import { closeTestDocumentClient } from '@fisio/testkit';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { AuthError, type SignInStep } from '../src/emulator';
 import { jwtPayload } from '../src/testing';
-import { emulatorHarness, THERAPIST_PASSWORD } from './harness';
+import { emulatorHarness, SPEC_NOW, THERAPIST_PASSWORD } from './harness';
 
 const h = emulatorHarness();
 afterAll(closeTestDocumentClient);
+// Every spec starts at the same instant, whatever the others did to the clock.
+beforeEach(() => h.clock.set(SPEC_NOW));
 
 /** The auth error code a sign-in step was refused with. */
 async function refusal(step: Promise<unknown>): Promise<string> {
@@ -65,7 +67,6 @@ describe('C1 Sign in without a password (local auth emulator)', () => {
 
     h.clock.advance({ days: 1 });
     expect(await refusal(h.emulator.refresh(second.refreshToken))).toBe('not_authorized');
-    h.clock.advance({ days: -30 });
   });
 
   // Value: protects=no account enumeration on the code flow; fails_when=an unknown, blocked or therapist email gets a different answer, an email, or a different error; why_new=first emulator; seam=FakeChannel; no_claim=response timing
@@ -125,6 +126,58 @@ describe('C1 Sign in without a password (local auth emulator)', () => {
     await expect(h.emulator.answerEmailOtp(after, h.lastCode(user.email))).resolves.toHaveProperty(
       'accessToken',
     );
+  });
+
+  // Value: protects=the lockout counts guesses, not a client's scattered typos; fails_when=a successful sign-in or the end of the 15-minute window does not reset the count; why_new=review finding (WP0.5); seam=FixedClock; no_claim=Cognito's own counter
+  it('a successful sign-in, or 15 minutes without errors, resets the wrong-code count', async () => {
+    const user = await h.client();
+    const fourWrong = async () => {
+      const session = sessionOf(await h.emulator.startEmailOtp(user.email));
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await refusal(h.emulator.answerEmailOtp(session, h.wrongCode(user.email)));
+      }
+      return session;
+    };
+    await h.emulator.answerEmailOtp(await fourWrong(), h.lastCode(user.email));
+    await fourWrong();
+    h.clock.advance({ minutes: 15 });
+    const session = sessionOf(await h.emulator.startEmailOtp(user.email));
+    expect(await refusal(h.emulator.answerEmailOtp(session, h.wrongCode(user.email)))).toBe(
+      'code_mismatch',
+    );
+  });
+
+  // Value: protects=parallel guesses cannot beat the lockout, and one code signs in once; fails_when=concurrent wrong answers undercount, or two concurrent right answers both get tokens; why_new=review finding (WP0.5); seam=DynamoDB Local conditional writes; no_claim=request timing
+  it('concurrent answers: every wrong guess counts and a right code signs in once', async () => {
+    const guessed = await h.client();
+    const sessions = await Promise.all(
+      Array.from({ length: 5 }, () => h.emulator.startEmailOtp(guessed.email)),
+    );
+    const wrong = h.wrongCode(guessed.email);
+    const answers = await Promise.all(
+      sessions.map((step) => refusal(h.emulator.answerEmailOtp(sessionOf(step), wrong))),
+    );
+    expect(answers).toContain('too_many_attempts');
+
+    const user = await h.client();
+    const session = sessionOf(await h.emulator.startEmailOtp(user.email));
+    const code = h.lastCode(user.email);
+    const results = await Promise.allSettled([
+      h.emulator.answerEmailOtp(session, code),
+      h.emulator.answerEmailOtp(session, code),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  });
+
+  // Value: protects=a failed code email does not reveal that the email is a client's; fails_when=a delivery error changes the answer; why_new=review finding (WP0.5); seam=FakeChannel.failNext; no_claim=retrying the delivery (WP0.6 outbox)
+  it('a code that cannot be delivered gives the same answer', async () => {
+    const user = await h.client();
+    h.channel.failNext(new Error('smtp down'));
+    expect(await h.emulator.startEmailOtp(user.email)).toEqual({
+      kind: 'challenge',
+      challenge: 'EMAIL_OTP',
+      session: expect.any(String),
+    });
   });
 
   // Value: protects=a code stops working after 5 minutes with its own error code; fails_when=an old code is accepted, or expiry reads as a wrong code; why_new=first emulator; seam=FixedClock; no_claim=the Italian message (WP0.7 Strings)
@@ -207,7 +260,47 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     expect(await refusal(h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD))).toBe(
       'too_many_attempts',
     );
-    h.clock.advance({ minutes: 15 });
+  });
+
+  // Value: protects=a TOTP code is good once, as on Cognito; fails_when=the same code signs in twice within its 90-second window; why_new=review finding (WP0.5); seam=FixedClock; no_claim=clock drift beyond one step
+  it('a TOTP code already used is refused', async () => {
+    const therapist = await h.therapist();
+    const code = await h.totp(therapist.secret);
+    const signIn = async () =>
+      sessionOf(await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD));
+    await expect(h.emulator.answerTotp(await signIn(), code)).resolves.toHaveProperty(
+      'accessToken',
+    );
+    expect(await refusal(h.emulator.answerTotp(await signIn(), code))).toBe('code_mismatch');
+    h.clock.advance({ seconds: 30 });
+    await expect(
+      h.emulator.answerTotp(await signIn(), await h.totp(therapist.secret)),
+    ).resolves.toHaveProperty('accessToken');
+  });
+
+  // Value: protects=a setup link cannot be finished twice or after it was replaced; fails_when=a second session on a spent code, or a session on a replaced code, overwrites the password and secret; why_new=review finding (WP0.5); seam=none; no_claim=the Cognito temporary password (WP0.10)
+  it('a setup code is spent by the first enrolment, and a replaced code cannot finish', async () => {
+    const user = await h.identity.createUser({ email: 'twice@example.test', role: 'therapist' });
+    const code = await h.identity.startPasswordSetup(user.userId);
+    const a = await h.emulator.startSetup(code, THERAPIST_PASSWORD);
+    const b = await h.emulator.startSetup(code, 'altra-password-lunga');
+    await h.emulator.verifyTotpSetup(a.session, await h.totp(a.secret));
+    expect(await refusal(h.emulator.verifyTotpSetup(b.session, await h.totp(b.secret)))).toBe(
+      'not_authorized',
+    );
+
+    const other = await h.identity.createUser({
+      email: 'replaced@example.test',
+      role: 'therapist',
+    });
+    const old = await h.emulator.startSetup(
+      await h.identity.startPasswordSetup(other.userId),
+      THERAPIST_PASSWORD,
+    );
+    await h.identity.startPasswordSetup(other.userId);
+    expect(await refusal(h.emulator.verifyTotpSetup(old.session, await h.totp(old.secret)))).toBe(
+      'not_authorized',
+    );
   });
 
   // Value: protects=the bootstrap setup link works once and enforces the password policy; fails_when=a short password is accepted, a used or replaced code works again; why_new=first setup flow; seam=none; no_claim=the SPA setup page (WP0.7)

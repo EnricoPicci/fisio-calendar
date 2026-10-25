@@ -1,7 +1,7 @@
 import { type AuthErrorCode, MIN_PASSWORD_LENGTH } from '@fisio/contracts';
 import type { Clock, NotificationChannel } from '@fisio/domain';
 import { generateSecret, generateURI, verify } from 'otplib';
-import type { EmulatorConfig } from './config';
+import { type EmulatorConfig, MS_PER_DAY } from './config';
 import { normaliseEmail } from './identity-provider';
 import type { RsaSigner } from './jwt';
 import {
@@ -24,6 +24,7 @@ import type { EmulatorStore, Session, StoredUser } from './store';
  *   enabled (T1). The bootstrap CLI's setup code sets the password and enrols TOTP once.
  * - Five wrong codes or passwords for one email lock it for 15 minutes; refresh tokens rotate,
  *   keep the first sign-in's expiry, and stop after a global sign-out or a disable.
+ * - Every session, setup code and TOTP code is good once, also under concurrent answers.
  */
 export interface AuthTokens {
   readonly accessToken: string;
@@ -58,6 +59,7 @@ export class AuthError extends Error {
 const TOTP_ISSUER = 'Fisio Calendar';
 /** One 30-second step either side, for a phone clock slightly off. */
 const TOTP_TOLERANCE_SECONDS = 30;
+const TOTP_CODE = /^\d{6}$/;
 
 export interface AuthEmulatorDeps {
   readonly store: EmulatorStore;
@@ -101,13 +103,16 @@ export class AuthEmulator {
     });
     if (usable) {
       const minutes = Math.round(this.#config.otpValiditySeconds / 60);
-      await this.#channel.send({
-        channel: 'email',
-        notificationKey: `AUTH_OTP#${session.sessionId}`,
-        to: email,
-        subject: 'Il tuo codice di accesso',
-        text: `Il tuo codice di accesso a Fisio Calendar è ${code}.\nÈ valido per ${minutes} minuti. Se non l'hai chiesto tu, ignora questo messaggio.`,
-      });
+      // A failed delivery must not change the answer, or it would tell clients from strangers.
+      await this.#channel
+        .send({
+          channel: 'email',
+          notificationKey: `AUTH_OTP#${session.sessionId}`,
+          to: email,
+          subject: 'Il tuo codice di accesso',
+          text: `Il tuo codice di accesso a Fisio Calendar è ${code}.\nÈ valido per ${minutes} minuti. Se non l'hai chiesto tu, ignora questo messaggio.`,
+        })
+        .catch((error: unknown) => console.error('[auth-emulator] code not delivered', error));
     }
     return { kind: 'challenge', challenge: 'EMAIL_OTP', session: session.sessionId };
   }
@@ -122,7 +127,7 @@ export class AuthEmulator {
       return this.#refuse(session, 'code_mismatch');
     }
     const user = await this.#usableUser(session.userId);
-    await this.#store.deleteSession(sessionId);
+    await this.#spend(sessionId);
     return this.#signIn(user);
   }
 
@@ -143,10 +148,12 @@ export class AuthEmulator {
     const session = await this.#openSession(sessionId, 'totp');
     if (this.#expired(session)) throw new AuthError('invalid_session');
     const user = await this.#usableUser(session.userId);
-    if (!user.totpSecret || !(await this.#totpMatches(user.totpSecret, code))) {
+    const step = user.totpSecret ? await this.#totpStep(user.totpSecret, code) : undefined;
+    // A code already used (here or at enrolment) is refused like a wrong one, as on Cognito.
+    if (step === undefined || !(await this.#store.acceptTotpStep(user.userId, step))) {
       return this.#refuse(session, 'code_mismatch');
     }
-    await this.#store.deleteSession(sessionId);
+    await this.#spend(sessionId);
     return this.#signIn(user);
   }
 
@@ -183,7 +190,11 @@ export class AuthEmulator {
     };
   }
 
-  /** Step two: the first TOTP code proves the enrolment; the password and secret are stored. */
+  /**
+   * Step two: the first TOTP code proves the enrolment; the password and secret are stored, and
+   * the setup code is retired. Only while that code is still the user's live one: a second
+   * session opened with it, or one opened with a code a bootstrap re-run replaced, is refused.
+   */
   async verifyTotpSetup(sessionId: string, code: string): Promise<AuthTokens> {
     const session = await this.#openSession(sessionId, 'totp_setup');
     if (this.#expired(session)) throw new AuthError('invalid_session');
@@ -192,17 +203,20 @@ export class AuthEmulator {
     if (!pendingTotpSecret || !pendingPasswordHash || !setupCodeHash) {
       throw new AuthError('invalid_session');
     }
-    if (!(await this.#totpMatches(pendingTotpSecret, code))) {
-      return this.#refuse(session, 'code_mismatch');
-    }
-    await this.#store.updateUser(user.userId, {
+    if (user.setupCodeHash !== setupCodeHash) throw new AuthError('not_authorized');
+    const step = await this.#totpStep(pendingTotpSecret, code);
+    if (step === undefined) return this.#refuse(session, 'code_mismatch');
+    await this.#spend(sessionId);
+    const fields = {
       passwordHash: pendingPasswordHash,
       totpSecret: pendingTotpSecret,
-      setupCodeHash: undefined,
-    });
+      lastTotpStep: step,
+    };
+    if (!(await this.#store.completeSetup(user.userId, setupCodeHash, fields))) {
+      throw new AuthError('not_authorized');
+    }
     await this.#store.deleteSetup(setupCodeHash);
-    await this.#store.deleteSession(sessionId);
-    return this.#signIn({ ...user, passwordHash: pendingPasswordHash });
+    return this.#signIn({ ...user, ...fields, setupCodeHash: undefined });
   }
 
   /** New tokens for a refresh token, which is spent: the answer carries its replacement. */
@@ -235,7 +249,7 @@ export class AuthEmulator {
     const signedInAt = chain?.signedInAt ?? now.toISOString();
     const expiresAt =
       chain?.expiresAt ??
-      new Date(now.getTime() + config.refreshTokenDays[user.role] * 86_400_000).toISOString();
+      new Date(now.getTime() + config.refreshTokenDays[user.role] * MS_PER_DAY).toISOString();
     const iat = Math.floor(now.getTime() / 1000);
     const common = {
       sub: user.userId,
@@ -297,6 +311,11 @@ export class AuthEmulator {
     return session;
   }
 
+  /** Ends a session that was answered; a concurrent answer that spent it first wins. */
+  async #spend(sessionId: string): Promise<void> {
+    if (!(await this.#store.takeSession(sessionId))) throw new AuthError('invalid_session');
+  }
+
   #expired(session: Session): boolean {
     return this.#clock.now().toISOString() >= session.expiresAt;
   }
@@ -307,14 +326,19 @@ export class AuthEmulator {
     return user;
   }
 
-  async #totpMatches(secret: string, code: string): Promise<boolean> {
+  /**
+   * The time step of a matching TOTP code, or undefined. A malformed code never reaches otplib;
+   * an otplib failure is an internal error, not a wrong code counted toward the lockout.
+   */
+  async #totpStep(secret: string, code: string): Promise<number | undefined> {
+    if (!TOTP_CODE.test(code)) return undefined;
     const result = await verify({
       secret,
       token: code,
       epoch: Math.floor(this.#clock.now().getTime() / 1000),
       epochTolerance: TOTP_TOLERANCE_SECONDS,
-    }).catch(() => ({ valid: false }));
-    return result.valid;
+    });
+    return result.valid && 'timeStep' in result ? result.timeStep : undefined;
   }
 
   async #isLocked(email: string): Promise<boolean> {
@@ -333,17 +357,13 @@ export class AuthEmulator {
     code: AuthErrorCode,
   ): Promise<never> {
     const now = this.#clock.now();
-    const current = await this.#store.getAttempts(session.email);
-    const live = current && now.toISOString() < current.resetAt ? current : undefined;
-    const failures = (live?.failures ?? 0) + 1;
-    const resetAt =
-      live?.resetAt ?? new Date(now.getTime() + this.#config.lockoutSeconds * 1000).toISOString();
-    if (failures < this.#config.maxFailedAttempts) {
-      await this.#store.putAttempts(session.email, { failures, resetAt });
-      throw new AuthError(code);
-    }
-    const lockedUntil = new Date(now.getTime() + this.#config.lockoutSeconds * 1000).toISOString();
-    await this.#store.putAttempts(session.email, { failures, lockedUntil, resetAt: lockedUntil });
+    const window = this.#config.lockoutSeconds;
+    const failures = await this.#store.recordFailure(session.email, now, window);
+    if (failures < this.#config.maxFailedAttempts) throw new AuthError(code);
+    await this.#store.lockAttempts(
+      session.email,
+      new Date(now.getTime() + window * 1000).toISOString(),
+    );
     if (session.sessionId) await this.#store.deleteSession(session.sessionId);
     throw new AuthError('too_many_attempts');
   }

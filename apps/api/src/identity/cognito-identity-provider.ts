@@ -14,8 +14,8 @@ import {
   type CognitoIdentityProviderClient,
 } from '@aws-sdk/client-cognito-identity-provider';
 import {
+  IDENTITY_ROLES,
   type IdentityProvider,
-  type IdentityRole,
   type IdentityUser,
   IdentityUserExistsError,
   IdentityUserNotFoundError,
@@ -61,13 +61,21 @@ export class CognitoIdentityProvider implements IdentityProvider {
       }
       throw error;
     }
-    await this.cognito.send(
-      new AdminAddUserToGroupCommand({
-        UserPoolId: this.userPoolId,
-        Username: email,
-        GroupName: user.role,
-      }),
-    );
+    try {
+      await this.cognito.send(
+        new AdminAddUserToGroupCommand({
+          UserPoolId: this.userPoolId,
+          Username: email,
+          GroupName: user.role,
+        }),
+      );
+    } catch (error) {
+      // A user without its group has no role: remove it, so a retry starts clean.
+      await this.cognito
+        .send(new AdminDeleteUserCommand({ UserPoolId: this.userPoolId, Username: email }))
+        .catch(() => undefined);
+      throw error;
+    }
     const created = await this.findUserByEmail(email);
     if (!created) throw new Error('Cognito did not return the user it just created');
     return created;
@@ -91,8 +99,10 @@ export class CognitoIdentityProvider implements IdentityProvider {
       user.UserAttributes?.find((entry) => entry.Name === name)?.Value;
     const userId = attribute('sub');
     if (!userId) throw new Error('Cognito user without a sub attribute');
+    const totpEnabled = (user.UserMFASettingList ?? []).includes(MFA);
     const groupNames = (groups.Groups ?? []).map((group) => group.GroupName);
-    const role: IdentityRole = groupNames.includes('therapist') ? 'therapist' : 'client';
+    const role = IDENTITY_ROLES.find((name) => groupNames.includes(name));
+    if (!role) throw new Error(`Cognito user ${userId} is in no role group`);
     return {
       userId,
       email: attribute('email') ?? username,
@@ -100,10 +110,10 @@ export class CognitoIdentityProvider implements IdentityProvider {
       enabled: user.Enabled === true,
       // FORCE_CHANGE_PASSWORD until the setup link is used; meaningful for the therapist only.
       passwordSet: user.UserStatus === 'CONFIRMED',
-      totp: {
-        enabled: (user.UserMFASettingList ?? []).includes(MFA),
-        preferred: user.PreferredMfaSetting === MFA,
-      },
+      totp: { enabled: totpEnabled, preferred: user.PreferredMfaSetting === MFA },
+      // Cognito lists TOTP only once a token is associated and verified (§15: the WP0.10 spike
+      // checks that a preference set before enrolment does not list it).
+      totpEnrolled: totpEnabled,
     };
   }
 

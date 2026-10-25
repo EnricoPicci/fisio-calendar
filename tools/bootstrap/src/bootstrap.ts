@@ -5,7 +5,8 @@ import { type Clock, type IdentityProvider, type IdentityUser, isErrorNamed } fr
  * `bootstrap:therapist` (docs/architecture.md §11.5, decision 8A): the only way to create the
  * therapist in any stage. Through the `IdentityProvider` port it creates the user (or finds it),
  * enables it, sets the TOTP preference to enabled and preferred, writes the tenant's Settings
- * item, and returns a one-time setup link while no password has been chosen. Idempotent: a re-run
+ * item, and returns a one-time setup link until the therapist has chosen a password **and**
+ * enrolled an authenticator: a password alone is not a finished setup. Idempotent: a re-run
  * changes nothing that is already right and never creates a second user; before the setup is
  * done it issues a fresh link, which replaces the earlier one.
  */
@@ -19,7 +20,11 @@ export interface BootstrapDeps {
 export interface BootstrapInput {
   readonly email: string;
   readonly tenantId: TenantId;
-  /** The SPA's setup page, e.g. `https://dev.example.it/setup`; the link adds `email` and `code`. */
+  /**
+   * The SPA's setup page, e.g. `https://dev.example.it/setup`. The link carries `email` and `code`
+   * in the fragment, which browsers never send to a server, so the code stays out of access logs
+   * and `Referer` headers.
+   */
   readonly setupUrl: string;
 }
 
@@ -28,7 +33,9 @@ export interface BootstrapResult {
   readonly email: string;
   /** False on a re-run that found the user. */
   readonly created: boolean;
-  /** Present until the therapist has chosen a password. */
+  /** True when the run enabled a user it found disabled. */
+  readonly reenabled: boolean;
+  /** Present until the therapist has chosen a password and enrolled TOTP. */
   readonly setupLink?: string;
 }
 
@@ -46,15 +53,16 @@ export async function bootstrapTherapist(
   if (user.role !== 'therapist') {
     throw new BootstrapError(`${email} belongs to a client; use another address for the therapist`);
   }
-  if (!user.enabled) await deps.identity.enableUser(user.userId);
+  const reenabled = !user.enabled;
+  if (reenabled) await deps.identity.enableUser(user.userId);
   await deps.identity.setTotpPreference(user.userId, { enabled: true, preferred: true });
   await deps.settings.create(input.tenantId, deps.clock.now());
-  const result = { userId: user.userId, email, created };
-  if (user.passwordSet) return result;
+  const result = { userId: user.userId, email, created, reenabled };
+  if (user.passwordSet && user.totpEnrolled) return result;
 
+  const code = await deps.identity.startPasswordSetup(user.userId);
   const link = new URL(input.setupUrl);
-  link.searchParams.set('email', email);
-  link.searchParams.set('code', await deps.identity.startPasswordSetup(user.userId));
+  link.hash = new URLSearchParams({ email, code }).toString();
   return { ...result, setupLink: link.toString() };
 }
 

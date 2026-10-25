@@ -216,6 +216,54 @@
 **Priority:** P4
 **Depends on:** None.
 
+### Tie the bootstrap CLI's Cognito pool to its stage
+
+**What:** Have `bootstrap:therapist --stage dev|prod` read the pool id (and the SPA origin) from the stage's stack outputs, or check the pool's name or tag against `--stage`, instead of trusting `COGNITO_USER_POOL_ID` from the shell. Ask for confirmation on `prod`.
+
+**Why:** A prod pool id left in the shell would make `--stage dev` reset the prod therapist's setup (a new temporary password) while writing Settings to the dev table. Since WP0.5 the region comes from the pool id and `WEB_ORIGIN` must be https, but nothing ties the pool to the stage.
+
+**Context:** Adversarial finding in the WP0.5 `/review`. The stacks and their outputs arrive in WP0.9; the first real run is WP0.10.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9.
+
+### Sign-in lockout as a denial of service
+
+**What:** Decide how the lockout is keyed. Today five wrong codes or passwords for one email lock that email for 15 minutes, and the code and password flows share the counter. Anyone who knows an address can keep a client, or the therapist, locked out by repeating that every 15 minutes. While locked, a client asking for a code gets the normal answer and no email. Options: count per session or user, keep code failures out of the password flow, add a per-IP WAF rate rule on the sign-in endpoints, and design the SPA's "locked" message with a C1 journey.
+
+**Why:** The rule mirrors Cognito, which also locks per user, so changing the emulator alone would make it drift from the cloud. Whatever is chosen must hold on both.
+
+**Context:** Red-team finding in the WP0.5 `/review`. The WAF rules are WP0.9; the SPA's sign-in pages are WP0.7.
+
+**Effort:** M
+**Priority:** P3
+**Depends on:** WP0.7, WP0.9.
+
+### Refresh-token reuse grace period
+
+**What:** Pin the app client's refresh-token rotation grace period (`RetryGracePeriodSeconds`) in WP0.9. Then either give the emulator the same window, with a contract row ("a refresh token reused within the grace period succeeds once"), or have the SPA serialise refreshes across tabs (a Web Lock or BroadcastChannel) and cover that with a journey.
+
+**Why:** The emulator spends a refresh token on first use. Two tabs, or a retry after a timeout, that refresh with the same token sign the user out locally, while Cognito with a grace period would accept both. The SPA's refresh handling would be built against the stricter rule.
+
+**Context:** Red-team finding in the WP0.5 `/review`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.7, WP0.9.
+
+### The seed reconciles existing clients
+
+**What:** Make `pnpm seed` bring an existing client back to its seeded state: enable or disable the identity to match `status`, and correct the client item, instead of skipping any client that already exists.
+
+**Why:** A client blocked or edited by hand during local testing stays that way after a re-seed, so "a re-run changes nothing" also means "a re-run repairs nothing". `pnpm local:down && pnpm local:up` is the reset today.
+
+**Context:** Adversarial finding in the WP0.5 `/review`.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
 ## Web app
 
 ### Installable PWA

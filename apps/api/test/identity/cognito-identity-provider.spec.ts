@@ -77,7 +77,29 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
       enabled: true,
       passwordSet: true,
       totp: { enabled: true, preferred: true },
+      totpEnrolled: true,
     });
+  });
+
+  // Value: protects=a half-created user never blocks bootstrap or reads as a client; fails_when=a failed group assignment leaves the user behind, or a user in no group is reported as a client; why_new=review finding (WP0.5); seam=recording client; no_claim=AdminDeleteUser itself failing (logged by the caller's error)
+  it('a failed group assignment removes the user, and a user in no group is refused, not read as a client', async () => {
+    const failing = recordingCognito({
+      AdminAddUserToGroupCommand: cognitoError('TooManyRequestsException'),
+    });
+    await expect(
+      failing.provider.createUser({ email: 'a@example.test', role: 'therapist' }),
+    ).rejects.toThrow('TooManyRequestsException');
+    expect(failing.sent.map(({ command }) => command)).toEqual([
+      'AdminCreateUserCommand',
+      'AdminAddUserToGroupCommand',
+      'AdminDeleteUserCommand',
+    ]);
+
+    const groupless = recordingCognito({
+      ...existingUser,
+      AdminListGroupsForUserCommand: () => ({ Groups: [] }),
+    });
+    await expect(groupless.provider.findUserByEmail('terapista@example.test')).rejects.toThrow();
   });
 
   // Value: protects=Cognito's error names become the port's errors; fails_when=UsernameExists/UserNotFound leak as SDK errors or another error is swallowed; why_new=first adapter; seam=recording client; no_claim=other SDK errors' retry behaviour

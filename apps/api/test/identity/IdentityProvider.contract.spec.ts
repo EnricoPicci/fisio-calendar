@@ -51,9 +51,28 @@ export function describeIdentityProviderContract(
         enabled: true,
         passwordSet: false,
         totp: { enabled: false, preferred: false },
+        totpEnrolled: false,
       });
       expect(await t.provider.findUserByEmail(email.toUpperCase())).toEqual(created);
       expect(await t.provider.findUserByEmail(uniqueEmail('nessuno'))).toBeUndefined();
+    });
+
+    // Value: protects=the therapist's role and MFA preference read back the same from both adapters (the emulator stores them, Cognito derives them from groups and MFA settings); fails_when=the role is lost, or `preferred` survives a disabled preference; why_new=review finding (WP0.5); seam=none; no_claim=enrolment (sign-in specs)
+    it('keeps the therapist role and the TOTP preference, preferred only while enabled', async () => {
+      const email = uniqueEmail('terapista');
+      const user = await t.provider.createUser({ email, role: 'therapist' });
+      expect(user).toMatchObject({ role: 'therapist', totpEnrolled: false });
+      await t.provider.setTotpPreference(user.userId, { enabled: true, preferred: true });
+      expect((await t.provider.findUserByEmail(email))?.totp).toEqual({
+        enabled: true,
+        preferred: true,
+      });
+      await t.provider.setTotpPreference(user.userId, { enabled: false, preferred: true });
+      expect((await t.provider.findUserByEmail(email))?.totp).toEqual({
+        enabled: false,
+        preferred: false,
+      });
+      expect(await t.provider.startPasswordSetup(user.userId)).toEqual(expect.any(String));
     });
 
     // Value: protects=the add-client 409 client_exists (WP0.6) can rely on the provider refusing a taken email; fails_when=a duplicate is created or the error is not the port's; why_new=first contract; seam=none; no_claim=the API's own uniqueness check (GSI2)
@@ -77,6 +96,8 @@ export function describeIdentityProviderContract(
 
       await t.provider.enableUser(user.userId);
       expect(await t.provider.findUserByEmail(email)).toMatchObject({ enabled: true });
+      // Disabling revoked the old session for good; only a new sign-in renews.
+      expect(await device.refresh()).toBe(false);
       expect(await (await t.signIn(email)).refresh()).toBe(true);
     });
 
@@ -99,6 +120,8 @@ export function describeIdentityProviderContract(
       expect(await t.provider.findUserByEmail(email)).toBeUndefined();
       for (const operation of [
         () => t.provider.disableUser(user.userId),
+        () => t.provider.enableUser(user.userId),
+        () => t.provider.setTotpPreference(user.userId, { enabled: true, preferred: true }),
         () => t.provider.globalSignOut(user.userId),
         () => t.provider.deleteUser(user.userId),
         () => t.provider.startPasswordSetup(user.userId),

@@ -25,6 +25,12 @@ export interface EmulatorConfig {
   readonly setupCodeDays: number;
 }
 
+export const MS_PER_DAY = 86_400_000;
+
+/** The local SPA (Vite, WP0.7): the CORS origins, and the setup page of the bootstrap link. */
+export const LOCAL_WEB_ORIGINS = ['http://127.0.0.1:5173', 'http://localhost:5173'];
+export const LOCAL_SETUP_URL = 'http://127.0.0.1:5173/setup';
+
 /** `pnpm dev`: the issuer `apps/api/src/runtime/local.ts` expects. */
 export const LOCAL_EMULATOR_PORT = 9100;
 export const LOCAL_POOL_ID = 'local';

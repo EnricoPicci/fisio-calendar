@@ -34,20 +34,36 @@ export function createTestEmulator(options: TestEmulatorOptions) {
   const identity = new LocalIdentityProvider(store, options.clock, config);
 
   /** The current TOTP code for `secret` at the emulator's clock. */
-  const totp = (secret: string) =>
-    generate({ secret, epoch: Math.floor(options.clock.now().getTime() / 1000) });
+  const totp = (secret: string) => totpCode(options.clock, secret);
 
-  /** Uses a setup code as the therapist would: password, then the first TOTP code. */
-  async function completeSetup(
-    setupCode: string,
-    password: string,
-  ): Promise<{ secret: string; otpauthUri: string; tokens: AuthTokens }> {
-    const enrolment = await emulator.startSetup(setupCode, password);
-    const tokens = await emulator.verifyTotpSetup(enrolment.session, await totp(enrolment.secret));
-    return { secret: enrolment.secret, otpauthUri: enrolment.otpauthUri, tokens };
-  }
+  return {
+    config,
+    store,
+    signer,
+    emulator,
+    identity,
+    totp,
+    completeSetup: (setupCode: string, password: string) =>
+      completeSetup(emulator, options.clock, setupCode, password),
+  };
+}
 
-  return { config, store, signer, emulator, identity, totp, completeSetup };
+/** The TOTP code for `secret` at `clock`'s instant. */
+export function totpCode(clock: Clock, secret: string): Promise<string> {
+  return generate({ secret, epoch: Math.floor(clock.now().getTime() / 1000) });
+}
+
+/** Uses a setup code as the therapist would: password, then the first TOTP code. */
+export async function completeSetup(
+  emulator: AuthEmulator,
+  clock: Clock,
+  setupCode: string,
+  password: string,
+): Promise<{ secret: string; otpauthUri: string; tokens: AuthTokens }> {
+  const enrolment = await emulator.startSetup(setupCode, password);
+  const code = await totpCode(clock, enrolment.secret);
+  const tokens = await emulator.verifyTotpSetup(enrolment.session, code);
+  return { secret: enrolment.secret, otpauthUri: enrolment.otpauthUri, tokens };
 }
 
 export type TestEmulator = ReturnType<typeof createTestEmulator>;
