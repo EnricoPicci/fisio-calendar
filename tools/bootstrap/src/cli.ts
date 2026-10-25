@@ -99,6 +99,20 @@ function adaptersFor(
   };
 }
 
+/**
+ * What a failed run prints: the error's name and message, then each inner error of an
+ * AggregateError (the Cognito user left without a group, and why its removal failed), so the
+ * operator sees the SDK exception names, such as AccessDeniedException, not only the summary.
+ */
+export function failureLines(error: unknown): string[] {
+  const describe = (e: unknown) => (e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+  const inner = error instanceof AggregateError ? error.errors : [];
+  return [
+    `Bootstrap failed: ${describe(error)}`,
+    ...inner.map((e) => `  caused by ${describe(e)}`),
+  ];
+}
+
 /** Runs the CLI; returns the exit code. `print` receives every line of output. */
 export async function runBootstrapCli(
   argv: readonly string[],
@@ -135,7 +149,7 @@ export async function runBootstrapCli(
     );
     return 0;
   } catch (error) {
-    print(`Bootstrap failed: ${(error as Error).message}`);
+    for (const line of failureLines(error)) print(line);
     return 1;
   } finally {
     adapters.close();

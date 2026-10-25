@@ -5,7 +5,7 @@ import { type NotificationChannel, systemClock } from '@fisio/domain';
 import { tableName } from '@fisio/infra/table-definition';
 import { localDynamoClient } from '@fisio/local/table';
 import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
 import {
@@ -40,6 +40,15 @@ const SetupBody = z
   .strict();
 const RefreshBody = z.object({ refreshToken: z.string().min(1).max(256) }).strict();
 
+/** A request body that is not JSON or does not match its schema: the only 400 validation_failed. */
+class MalformedBody extends Error {}
+
+async function body<T>(c: Context, schema: z.ZodType<T>): Promise<T> {
+  const parsed = schema.safeParse(await c.req.json().catch(() => undefined));
+  if (!parsed.success) throw new MalformedBody();
+  return parsed.data;
+}
+
 export function createEmulatorApp(emulator: AuthEmulator, config: EmulatorConfig): Hono {
   const base = new URL(config.issuer).pathname.replace(/\/+$/, '');
   const app = new Hono();
@@ -60,30 +69,30 @@ export function createEmulatorApp(emulator: AuthEmulator, config: EmulatorConfig
   const routes = new Hono();
   routes.get('/.well-known/jwks.json', (c) => c.json(emulator.jwks));
   routes.post('/email-otp', async (c) =>
-    c.json(await emulator.startEmailOtp(EmailBody.parse(await c.req.json()).email)),
+    c.json(await emulator.startEmailOtp((await body(c, EmailBody)).email)),
   );
   routes.post('/email-otp/answer', async (c) => {
-    const body = AnswerBody.parse(await c.req.json());
-    return c.json(await emulator.answerEmailOtp(body.session, body.code));
+    const answer = await body(c, AnswerBody);
+    return c.json(await emulator.answerEmailOtp(answer.session, answer.code));
   });
   routes.post('/password', async (c) => {
-    const body = PasswordBody.parse(await c.req.json());
-    return c.json(await emulator.signInWithPassword(body.email, body.password));
+    const step = await body(c, PasswordBody);
+    return c.json(await emulator.signInWithPassword(step.email, step.password));
   });
   routes.post('/totp/answer', async (c) => {
-    const body = AnswerBody.parse(await c.req.json());
-    return c.json(await emulator.answerTotp(body.session, body.code));
+    const answer = await body(c, AnswerBody);
+    return c.json(await emulator.answerTotp(answer.session, answer.code));
   });
   routes.post('/setup', async (c) => {
-    const body = SetupBody.parse(await c.req.json());
-    return c.json(await emulator.startSetup(body.code, body.password));
+    const setup = await body(c, SetupBody);
+    return c.json(await emulator.startSetup(setup.code, setup.password));
   });
   routes.post('/setup/verify', async (c) => {
-    const body = AnswerBody.parse(await c.req.json());
-    return c.json(await emulator.verifyTotpSetup(body.session, body.code));
+    const answer = await body(c, AnswerBody);
+    return c.json(await emulator.verifyTotpSetup(answer.session, answer.code));
   });
   routes.post('/refresh', async (c) =>
-    c.json(await emulator.refresh(RefreshBody.parse(await c.req.json()).refreshToken)),
+    c.json(await emulator.refresh((await body(c, RefreshBody)).refreshToken)),
   );
 
   app.route(base, routes);
@@ -92,9 +101,8 @@ export function createEmulatorApp(emulator: AuthEmulator, config: EmulatorConfig
     if (error instanceof AuthError && isAuthErrorCode(error.code)) {
       return c.json({ code: error.code }, 400);
     }
-    if (error instanceof z.ZodError || error instanceof SyntaxError) {
-      return c.json({ code: 'validation_failed' }, 400);
-    }
+    if (error instanceof MalformedBody) return c.json({ code: 'validation_failed' }, 400);
+    // Anything else, a stored record that fails its schema included, is the emulator's own fault.
     console.error(error);
     return c.json({ code: 'internal_error' }, 500);
   });

@@ -16,7 +16,7 @@ import {
 } from '@fisio/testkit';
 import { afterAll, describe, expect, it } from 'vitest';
 import { BootstrapError, bootstrapTherapist } from '../src/bootstrap';
-import { parseBootstrapArgs, runBootstrapCli } from '../src/cli';
+import { failureLines, parseBootstrapArgs, runBootstrapCli } from '../src/cli';
 
 const clock = new FixedClock('2027-03-01T08:00:00.000Z');
 const tenantId = TenantIdSchema.parse(freshTenant());
@@ -303,5 +303,19 @@ describe('bootstrap:therapist (architecture §11.5)', () => {
     ]) {
       expect(await runBootstrapCli(prod, env, print)).toBe(2);
     }
+  });
+
+  // Value: protects=a failed run names every cause, so the operator of the WP0.10 cloud bootstrap can act on both Cognito failures; fails_when=the CLI prints only the AggregateError's summary, or drops an error's name; why_new=review finding (run 2 cycle 2); seam=failureLines, the CLI's failure output; no_claim=the message wording
+  it('a failed run prints each cause of an aggregate failure by name', () => {
+    const named = (name: string) => Object.assign(new Error(name), { name });
+    const lines = failureLines(
+      new AggregateError([named('TooManyRequestsException'), named('AccessDeniedException')], ''),
+    );
+    expect(lines.map((line) => line.match(/\b\w+(?:Error|Exception)\b/)?.[0])).toEqual([
+      'AggregateError',
+      'TooManyRequestsException',
+      'AccessDeniedException',
+    ]);
+    expect(failureLines(named('ResourceNotFoundException'))).toHaveLength(1);
   });
 });

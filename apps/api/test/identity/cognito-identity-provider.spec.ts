@@ -119,7 +119,7 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
     await expect(groupless.provider.findUserByEmail('terapista@example.test')).rejects.toThrow();
   });
 
-  // Value: protects=Cognito's error names become the port's errors; fails_when=UsernameExists/UserNotFound leak as SDK errors or another error is swallowed; why_new=first adapter; seam=recording client; no_claim=other SDK errors' retry behaviour
+  // Value: protects=Cognito's error names become the port's errors; fails_when=UsernameExists/UserNotFound leak as SDK errors, another error is swallowed or remapped, or a failed create goes on to the group add; why_new=first adapter; seam=recording client; no_claim=other SDK errors' retry behaviour
   it('maps UsernameExistsException and UserNotFoundException to the port errors', async () => {
     const taken = recordingCognito({
       AdminCreateUserCommand: cognitoError('UsernameExistsException'),
@@ -127,6 +127,14 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
     await expect(
       taken.provider.createUser({ email: 'a@example.test', role: 'client' }),
     ).rejects.toThrow(IdentityUserExistsError);
+    // Any other create failure passes through untouched, and nothing follows it.
+    const throttled = recordingCognito({
+      AdminCreateUserCommand: cognitoError('TooManyRequestsException'),
+    });
+    await expect(
+      throttled.provider.createUser({ email: 'a@example.test', role: 'client' }),
+    ).rejects.toMatchObject({ name: 'TooManyRequestsException' });
+    expect(throttled.sent.map(({ command }) => command)).toEqual(['AdminCreateUserCommand']);
 
     const missing = recordingCognito({
       AdminGetUserCommand: cognitoError('UserNotFoundException'),
