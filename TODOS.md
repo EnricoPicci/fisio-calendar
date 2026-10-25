@@ -754,30 +754,6 @@
 **Priority:** P4
 **Depends on:** A real request from the therapist.
 
-### A refresh may adopt another user's tokens on a shared device
-
-**What:** Compare the `sub` claim of the tokens a refresh hands over with the session's current one in `SessionViewModel` (`accessToken$`), and end the session (`refresh_refused`) on a mismatch; in `LocalAuthService.refresh()`, adopt another tab's pair only when its `sub` matches the pair this call used.
-
-**Why:** Tab A refreshes while tab B signs out and signs in as someone else (a shared phone, the therapist on a client's device): `LocalAuthService` adopts the pair it finds in storage and `accept()` checks only that the role is known, so tab A keeps showing A's greeting while every request carries B's bearer; with different roles `page$` flips to the other home with no `signedOut$`. Amplify's `fetchAuthSession({ forceRefresh: true })` refreshes whoever its `LastAuthUser` key names, so the cloud build has the same hole.
-
-**Context:** Adversarial finding of the third WP0.7 ship-review pass. Distinct from "Sign-out does not reach the other tabs" (above), which leaves tab A usable as A.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** None.
-
-### The password-only therapist refusal lives only in the Amplify service
-
-**What:** Decide where "a password alone never counts as a finished setup" (architecture §15) is enforced on the SPA side: refuse a `signed_in` answer to `signInWithPassword` whose access token names the therapist in the port-independent layer (`SignInViewModel` or `SessionViewModel.start()`, signing the provider out as `start()` already does for an unknown role), or keep it in each `AuthService` and make the emulator refuse it too. Flip the local-service spec row "a therapist without TOTP enabled signs in at once" and the sign-in spec row "a password sign-in without an MFA step signs in at once" accordingly.
-
-**Why:** `AmplifyAuthService` refuses a therapist without TOTP (`#enrolledOnly`), `LocalAuthService` passes the tokens straight through and `SignInViewModel` accepts them, so the two implementations disagree on a security property and the headless journeys (WP0.8) will run against the permissive one; a regression in the cloud guard is invisible to `pnpm test`.
-
-**Context:** Adversarial finding of the third WP0.7 ship-review pass. Related: "Server-side control for a therapist session without TOTP" (above). Settle before WP0.8 builds journeys on the current behaviour.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** None.
-
 ### The production bundle is first exercised after a deploy
 
 **What:** Validate `VITE_AUTH` and `VITE_COGNITO_*` in `vite.config.ts` (`loadEnv`) so a production build without them fails at build time, not at app start on the user's device (`readConfig` refuses it in the browser today); run `vite build` as a step of `pnpm deploy:dev` before the cloud diff, or as a bundle smoke spec; give `vite preview` the same `/api` proxy as the dev server (today every `/api/v1` call of the previewed bundle is a 404 from the preview server); and document that testing on a phone over the LAN needs a tunnel or an https origin (Vite binds `127.0.0.1`, the emulator's `LOCAL_WEB_ORIGINS` refuses other origins, `LocalAuthService` posts to the loopback issuer, and `crypto.subtle` is missing on a non-secure origin).
@@ -830,7 +806,7 @@
 
 **What:** When `step$` swaps a form (email → code, password → TOTP, setup password → TOTP), focus the first input of the new form (`autoFocus` is a binding attribute); give `INPUT` a background (`bg-white`) so a field reads as a well against the `stone-50` page; give the TOTP secret chip a visible edge (`bg-stone-100` on `stone-50` is a 1.03:1 contrast) and wider tracking; offer a show/hide toggle on the password fields, at least on the setup page, where a typo locks the therapist into a password she does not know (`revealPassword$` on the view-model keeps the template logic-free). Also: a spec row for the setup page's `disabled={busy}` submit buttons, a spec row for `invalid_session` as an ending refresh refusal (the `ENDING_REFUSALS` set has two members and one row), the local spent marker written only for `not_authorized` (today any `AuthError` on `/refresh` writes it, latent while the emulator refuses only with that code), a generation guard in `signOut()` so a late provider answer cannot end a session started meanwhile, and the stale landing of a non-ending refresh failure specced. `LOCAL_AUTH_ISSUER` should be tied to the emulator's default issuer by a spec (`DEFAULT_EMULATOR_CONFIG.issuer` from `@fisio/auth-emulator`), see "Local stack constants are repeated across packages"; the password length and the OTP figures in the Italian strings belong with `MIN_PASSWORD_LENGTH`, see "Sign-in policy figures live in the strings".
 
-Red-team items of the same pass: an error boundary around `<App/>` (or `onUncaughtError` on `createRoot`) rendering the same unexpected-error page and retry as the boot failure, since a render-time throw today leaves a blank page; `maxLength` and `pattern` on the three code inputs, or the emulator's `validation_failed` and Cognito's `InvalidParameterException` mapped to `code_mismatch` on the answer routes; the `src/pages` fence inverted to an allowlist of React imports (class components, `createContext`, `useId`, `startTransition` and future hooks pass the denylist) with `react-dom` and the logic-bearing react-router hooks restricted; the pre-gate lanes of the two home templates pointed at `HomePages.spec.tsx` and `main.tsx` at a future boot spec instead of `[]`; the refused-address short-circuit in `AmplifyAuthService.confirmCode()` (no network request, instant answer) is observable in the Network tab where the emulator answers with a real round trip, so keep the round-trip shape identical across the two services; and a therapist token obtained through the client code flow (`EMAIL_OTP`, before the WP0.9 trigger refuses it) passes the TOTP-enabled guard without TOTP having been used, so refuse a therapist role from `confirmCode()` as defence in depth (see also "The password-only therapist refusal lives only in the Amplify service").
+Red-team items of the same pass: an error boundary around `<App/>` (or `onUncaughtError` on `createRoot`) rendering the same unexpected-error page and retry as the boot failure, since a render-time throw today leaves a blank page; `maxLength` and `pattern` on the three code inputs, or the emulator's `validation_failed` and Cognito's `InvalidParameterException` mapped to `code_mismatch` on the answer routes; the `src/pages` fence inverted to an allowlist of React imports (class components, `createContext`, `useId`, `startTransition` and future hooks pass the denylist) with `react-dom` and the logic-bearing react-router hooks restricted; the pre-gate lanes of the two home templates pointed at `HomePages.spec.tsx` and `main.tsx` at a future boot spec instead of `[]`; the refused-address short-circuit in `AmplifyAuthService.confirmCode()` (no network request, instant answer) is observable in the Network tab where the emulator answers with a real round trip, so keep the round-trip shape identical across the two services.
 
 **Why:** Design, testing, state-machines, maintainability, red-team and adversarial findings of the fourth WP0.7 ship-review pass, all informational; recorded here instead of a further fixing cycle so the branch could converge.
 

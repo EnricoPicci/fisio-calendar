@@ -32,8 +32,11 @@ import { decodeJwtClaims } from '../services/jwt';
  *   requests share one refresh, and a refresh runs to completion even when every request that
  *   waited on it was cancelled (a rotated refresh token must never be lost). A refresh the
  *   provider refuses (`not_authorized`, `invalid_session`, or tokens the app cannot place) ends
- *   the session: `null` is emitted and `signedOut$` explains. A refresh refused for a passing
- *   reason (a lockout) yields `null` for that request and keeps the session. A refresh that
+ *   the session: `null` is emitted and `signedOut$` explains. So does a refresh that hands over
+ *   another user's tokens (someone else signed in on this device meanwhile, on a shared phone):
+ *   this tab must not carry their bearer under the old user's name, and their session is left
+ *   alone. A refresh refused for a passing reason (a lockout) fails that request with the
+ *   refusal and keeps the session. A refresh that
  *   fails for any other reason (offline) errors the request with that failure, so the form
  *   shows the offline text, and keeps the session. A refresh or a restore that answers after
  *   the session changed hands (sign-out, a new sign-in) is dropped.
@@ -172,6 +175,11 @@ export class SessionViewModel extends ViewModel implements SessionSink {
           this.#end('refresh_refused');
           return null;
         }
+        const user = subjectOf(this.#tokens.value);
+        if (user !== undefined && subjectOf(accepted) !== user) {
+          this.#end('refresh_refused');
+          return null;
+        }
         this.#tokens.next(accepted);
         return accepted.accessToken;
       }),
@@ -225,6 +233,11 @@ export class SessionViewModel extends ViewModel implements SessionSink {
 function accept(tokens: AuthTokens): AuthTokens | null {
   const role = decodeJwtClaims(tokens.accessToken).role;
   return typeof role === 'string' && KNOWN_ROLES.has(role) ? tokens : null;
+}
+
+/** Who the access token names (`sub`); `undefined` for nobody or a token without one, which binds no user. */
+function subjectOf(tokens: AuthTokens | null | undefined): string | undefined {
+  return tokens ? decodeJwtClaims(tokens.accessToken).sub : undefined;
 }
 
 function pageOf(tokens: AuthTokens | null | undefined): SessionPage {
