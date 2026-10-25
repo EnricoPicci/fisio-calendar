@@ -81,7 +81,7 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
     });
   });
 
-  // Value: protects=a half-created user never blocks bootstrap or reads as a client; fails_when=a failed group assignment leaves the user behind, or a user in no group is reported as a client; why_new=review finding (WP0.5); seam=recording client; no_claim=AdminDeleteUser itself failing (logged by the caller's error)
+  // Value: protects=a half-created user never blocks bootstrap or reads as a client; fails_when=a failed group assignment leaves the user behind, or a user in no group is reported as a client; why_new=review finding (WP0.5); seam=recording client; no_claim=Cognito's real error classes (plain errors with their names here)
   it('a failed group assignment removes the user, and a user in no group is refused, not read as a client', async () => {
     const failing = recordingCognito({
       AdminAddUserToGroupCommand: cognitoError('TooManyRequestsException'),
@@ -93,6 +93,23 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
       'AdminCreateUserCommand',
       'AdminAddUserToGroupCommand',
       'AdminDeleteUserCommand',
+    ]);
+
+    // If the removal fails too, the error names both failures instead of hiding the second.
+    const stuck = recordingCognito({
+      AdminAddUserToGroupCommand: cognitoError('TooManyRequestsException'),
+      AdminDeleteUserCommand: cognitoError('AccessDeniedException'),
+    });
+    const both = await stuck.provider
+      .createUser({ email: 'b@example.test', role: 'therapist' })
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+    expect(both).toBeInstanceOf(AggregateError);
+    expect((both as AggregateError).errors.map((error: Error) => error.name)).toEqual([
+      'TooManyRequestsException',
+      'AccessDeniedException',
     ]);
 
     const groupless = recordingCognito({

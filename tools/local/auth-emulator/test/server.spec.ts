@@ -53,6 +53,10 @@ describe('Auth emulator over HTTP (pnpm dev, architecture §11.4)', () => {
       status: 400,
       body: { code: 'validation_failed' },
     });
+    // A session id longer than any the emulator issues never reaches the store's key.
+    expect(
+      await post('/email-otp/answer', { session: 'x'.repeat(2048), code: '12345678' }),
+    ).toEqual({ status: 400, body: { code: 'validation_failed' } });
   });
 
   // Value: protects=a page on another site cannot send codes or lock seeded accounts through the developer's browser; fails_when=a foreign origin or a text/plain "simple" POST reaches a handler; why_new=red-team finding (WP0.5); seam=FakeChannel; no_claim=browser local-network protections
@@ -118,5 +122,23 @@ describe('Auth emulator over HTTP (pnpm dev, architecture §11.4)', () => {
       400,
       { code: 'validation_failed' },
     ]);
+  });
+
+  // Value: protects=a failure that is not a sign-in refusal answers 500 internal_error with nothing else, so LocalAuthService treats it as unexpected; fails_when=onError answers it as a 400 refusal or puts the error's text or stack in the body; why_new=only refusals, bad bodies and unknown paths are specced; seam=a stub emulator through createEmulatorApp's parameter; no_claim=what the console logs
+  it('an unexpected failure answers 500 with only the internal_error code', async () => {
+    const failing = Object.create(h.emulator, {
+      startEmailOtp: {
+        value: async () => {
+          throw new Error('DynamoDB Local unreachable at 127.0.0.1:8000');
+        },
+      },
+    });
+    const broken = createEmulatorApp(failing, h.config);
+    const res = await broken.request(`${base}/email-otp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'giulia@example.test' }),
+    });
+    expect([res.status, await res.json()]).toEqual([500, { code: 'internal_error' }]);
   });
 });

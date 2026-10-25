@@ -20,6 +20,12 @@ async function refusal(step: Promise<unknown>): Promise<string> {
   return error.code;
 }
 
+/** The password hash and TOTP secret stored on a user: both absent until an enrolment succeeds. */
+async function storedSecrets(userId: string): Promise<[string | undefined, string | undefined]> {
+  const user = await h.store.getUser(userId);
+  return [user?.passwordHash, user?.totpSecret];
+}
+
 function sessionOf(step: SignInStep): string {
   if (step.kind !== 'challenge') throw new Error('Expected a challenge');
   return step.session;
@@ -136,13 +142,15 @@ describe('C1 Sign in without a password (local auth emulator)', () => {
     const user = await h.client();
     const fourWrong = async () => {
       const session = sessionOf(await h.emulator.startEmailOtp(user.email));
+      const answers: string[] = [];
       for (let attempt = 0; attempt < 4; attempt++) {
-        await refusal(h.emulator.answerEmailOtp(session, h.wrongCode(user.email)));
+        answers.push(await refusal(h.emulator.answerEmailOtp(session, h.wrongCode(user.email))));
       }
-      return session;
+      return { session, answers };
     };
-    await h.emulator.answerEmailOtp(await fourWrong(), h.lastCode(user.email));
-    await fourWrong();
+    await h.emulator.answerEmailOtp((await fourWrong()).session, h.lastCode(user.email));
+    // Counted from zero again: without the reset, the first of these would be the fifth failure.
+    expect((await fourWrong()).answers).toEqual(Array(4).fill('code_mismatch'));
     h.clock.advance({ minutes: 15 });
     const session = sessionOf(await h.emulator.startEmailOtp(user.email));
     expect(await refusal(h.emulator.answerEmailOtp(session, h.wrongCode(user.email)))).toBe(
@@ -191,6 +199,20 @@ describe('C1 Sign in without a password (local auth emulator)', () => {
     expect(await refusal(h.emulator.answerEmailOtp(session, h.lastCode(user.email)))).toBe(
       'code_expired',
     );
+  });
+
+  // Value: protects=an unknown email's code step locks after five wrong answers and expires after 5 minutes exactly like a client's, so neither tells a stranger from a client; fails_when=a decoy session never counts failures or reads code_mismatch after expiry; why_new=state-machines finding (WP0.5 ship run 2); seam=none; no_claim=response timing
+  it("an unknown email's code step locks and expires like a client's", async () => {
+    const decoy = sessionOf(await h.emulator.startEmailOtp('nessuno-blocco@example.test'));
+    const answers: string[] = [];
+    for (let attempt = 0; attempt < 5; attempt++) {
+      answers.push(await refusal(h.emulator.answerEmailOtp(decoy, '12345678')));
+    }
+    expect(answers).toEqual([...Array(4).fill('code_mismatch'), 'too_many_attempts']);
+
+    const late = sessionOf(await h.emulator.startEmailOtp('nessuno-scade@example.test'));
+    h.clock.advance({ minutes: 5 });
+    expect(await refusal(h.emulator.answerEmailOtp(late, '12345678'))).toBe('code_expired');
   });
 
   // Value: protects=blocking also ends the device session (§8.1); fails_when=a disabled user or a global sign-out still refreshes; why_new=first emulator; seam=none; no_claim=the API's per-request status check (WP0.4 specs)
@@ -427,7 +449,6 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
   });
 
   // Value: protects=a password-proven step and an enrolment step last 5 minutes, and an expired enrolment stores nothing while the link stays usable; fails_when=the expiry check is dropped from answerTotp or verifyTotpSetup (the TTL deletes lazily); why_new=state-machines and testing findings (WP0.5): only the email code's expiry was specced; seam=FixedClock; no_claim=Cognito's AuthSessionValidity (WP0.9)
-  // Value: protects=a TOTP step and an enrolment live 5 minutes, and an expired enrolment stores nothing while its setup code stays usable; fails_when=a step is answered after its expiry, or an expired enrolment writes the password or secret; why_new=state-machines finding (WP0.5); seam=FixedClock; no_claim=Cognito's session lifetime
   it('a TOTP step or an enrolment left open for 5 minutes is refused', async () => {
     const therapist = await h.therapist();
     const step = sessionOf(
@@ -445,10 +466,7 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     expect(
       await refusal(h.emulator.verifyTotpSetup(enrolment.session, await h.totp(enrolment.secret))),
     ).toBe('invalid_session');
-    expect(await h.identity.findUserByEmail(user.email)).toMatchObject({
-      passwordSet: false,
-      totpEnrolled: false,
-    });
+    expect(await storedSecrets(user.userId)).toEqual([undefined, undefined]);
     await expect(h.emulator.startSetup(code, THERAPIST_PASSWORD)).resolves.toHaveProperty('secret');
   });
 
@@ -486,10 +504,7 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     }
     expect(setupAnswers.at(-1)).toBe('too_many_attempts');
     expect(await h.store.getSession(enrolment.session)).toBeUndefined();
-    expect(await h.identity.findUserByEmail(user.email)).toMatchObject({
-      passwordSet: false,
-      totpEnrolled: false,
-    });
+    expect(await storedSecrets(user.userId)).toEqual([undefined, undefined]);
   });
 
   // Value: protects=a block during enrolment stores neither the password nor the secret; fails_when=verifyTotpSetup skips the enabled check; why_new=state-machines finding (WP0.5); seam=none; no_claim=none beyond protects
@@ -503,10 +518,7 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     expect(
       await refusal(h.emulator.verifyTotpSetup(enrolment.session, await h.totp(enrolment.secret))),
     ).toBe('not_authorized');
-    expect(await h.identity.findUserByEmail(user.email)).toMatchObject({
-      passwordSet: false,
-      totpEnrolled: false,
-    });
+    expect(await storedSecrets(user.userId)).toEqual([undefined, undefined]);
   });
 
   // Value: protects=an enrolment opened just before the setup link expired can finish within its 5 minutes; fails_when=verifyTotpSetup starts refusing on the link's expiry, stranding a therapist mid-enrolment; why_new=state-machines finding (WP0.5): the boundary was undocumented; seam=FixedClock; no_claim=Cognito's temporary-password expiry
@@ -611,6 +623,46 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
       await refusal(h.emulator.answerTotp(first, wrong));
     }
     expect(await refusal(h.emulator.answerTotp(await signIn(), wrong))).toBe('too_many_attempts');
+  });
+
+  // Value: protects=the therapist's email is read as typed on a phone (any case, stray spaces), at sign-in and by the lockout; fails_when=signInWithPassword stops normalising the email, or counts and checks the lock under the raw spelling so case variants dodge it; why_new=only the code flow is specced with a mixed-case email; seam=none; no_claim=Cognito's case-insensitive username (pool setting, WP0.9)
+  it('the password step accepts the email in any letter case, and its lockout counts every spelling', async () => {
+    const therapist = await h.therapist();
+    const spellings = [
+      therapist.email.toUpperCase(),
+      ` ${therapist.email} `,
+      `${therapist.email[0]?.toUpperCase()}${therapist.email.slice(1)}`,
+    ];
+    expect(
+      await h.emulator.signInWithPassword(spellings[0] ?? '', THERAPIST_PASSWORD),
+    ).toMatchObject({ kind: 'challenge', challenge: 'SOFTWARE_TOKEN_MFA' });
+
+    const answers: string[] = [];
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const email = spellings[attempt % spellings.length] ?? '';
+      answers.push(await refusal(h.emulator.signInWithPassword(email, 'sbagliata-sbagliata')));
+    }
+    expect(answers).toEqual([...Array(4).fill('not_authorized'), 'too_many_attempts']);
+    expect(await refusal(h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD))).toBe(
+      'too_many_attempts',
+    );
+  });
+
+  // Value: protects=the password step does not tell a wrong password from an unknown email, a client's email or an unfinished setup; fails_when=a passwordless or unknown account gets another code or an internal error instead of not_authorized; why_new=enumeration is specced on the code flow only; seam=none; no_claim=response timing (scrypt runs only for a stored password)
+  it('a wrong password, an unknown email, a client and an unfinished setup get the same refusal', async () => {
+    const therapist = await h.therapist();
+    const client = await h.client();
+    const pending = await h.identity.createUser({
+      email: 'senza-password@example.test',
+      role: 'therapist',
+    });
+    await h.identity.startPasswordSetup(pending.userId);
+    expect([
+      await refusal(h.emulator.signInWithPassword(therapist.email, 'sbagliata-sbagliata')),
+      await refusal(h.emulator.signInWithPassword('nessuno-pw@example.test', THERAPIST_PASSWORD)),
+      await refusal(h.emulator.signInWithPassword(client.email, THERAPIST_PASSWORD)),
+      await refusal(h.emulator.signInWithPassword(pending.email, THERAPIST_PASSWORD)),
+    ]).toEqual(['not_authorized', 'not_authorized', 'not_authorized', 'not_authorized']);
   });
 
   // Value: protects=both adapters read an enrolled authenticator as `totpEnrolled` only while the TOTP preference is on, as Cognito lists it (§15), so bootstrap decides the same on each; fails_when=the emulator reports the stored secret alone; why_new=api-contract finding (WP0.5 ship cycle 3); seam=none; no_claim=Cognito's UserMFASettingList (WP0.10 spike)

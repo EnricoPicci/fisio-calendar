@@ -71,9 +71,17 @@ export class CognitoIdentityProvider implements IdentityProvider {
       );
     } catch (error) {
       // A user without its group has no role: remove it, so a retry starts clean.
-      await this.cognito
-        .send(new AdminDeleteUserCommand({ UserPoolId: this.userPoolId, Username: email }))
-        .catch(() => undefined);
+      try {
+        await this.cognito.send(
+          new AdminDeleteUserCommand({ UserPoolId: this.userPoolId, Username: email }),
+        );
+      } catch (cleanup) {
+        // Left behind, it refuses every later lookup and create: say so instead of hiding it.
+        throw new AggregateError(
+          [error, cleanup],
+          `Cognito user ${email} has no role group and could not be removed: delete it, then retry`,
+        );
+      }
       throw error;
     }
     const created = await this.findUserByEmail(email);

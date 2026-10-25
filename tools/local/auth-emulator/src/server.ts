@@ -29,7 +29,8 @@ import { EmulatorStore } from './store';
  */
 const EmailBody = z.object({ email: z.string().min(1).max(320) }).strict();
 const AnswerBody = z
-  .object({ session: z.string().min(1), code: z.string().min(1).max(16) })
+  // A session id is 43 characters (randomToken); a longer one would break the store's key size.
+  .object({ session: z.string().min(1).max(64), code: z.string().min(1).max(16) })
   .strict();
 const PasswordBody = z
   .object({ email: z.string().min(1).max(320), password: z.string().min(1).max(256) })
