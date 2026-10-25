@@ -3,12 +3,13 @@ import { stringsIt } from '@fisio/contracts';
 import { systemClock } from '@fisio/domain';
 import { createRoot } from 'react-dom/client';
 import { App } from './app/App';
+import { ALERT, BUTTON } from './app/classes';
 import { type AuthConfig, readConfig } from './app/config';
 import { DepsProvider } from './app/deps';
 import { OpenApiClient } from './services/api-client';
 import type { AuthService } from './services/auth-service';
 import { LocalAuthService } from './services/local-auth-service';
-import { BrowserStorage } from './services/storage';
+import { BrowserStorage, MemoryStorage, type Storage } from './services/storage';
 import { SessionViewModel } from './viewmodels/SessionViewModel';
 
 /**
@@ -23,6 +24,18 @@ const API_BASE_URL = '/api/v1';
 
 const browserFetch: typeof fetch = (input, init) => fetch(input, init);
 
+/** `localStorage`, or memory where the browser blocks site storage (the session then lasts a tab). */
+function deviceStorage(): Storage {
+  try {
+    const probe = 'fisio.storage.probe';
+    localStorage.setItem(probe, '1');
+    localStorage.removeItem(probe);
+    return new BrowserStorage(localStorage);
+  } catch {
+    return new MemoryStorage();
+  }
+}
+
 async function createAuthService(config: AuthConfig): Promise<AuthService> {
   if (config.mode === 'amplify') {
     // Loaded only by the cloud build, so the local bundle carries no Amplify code.
@@ -33,7 +46,7 @@ async function createAuthService(config: AuthConfig): Promise<AuthService> {
   return new LocalAuthService({
     issuer: config.issuer,
     fetch: browserFetch,
-    storage: new BrowserStorage(localStorage),
+    storage: deviceStorage(),
   });
 }
 
@@ -68,14 +81,10 @@ try {
   console.error('[main] the app could not start', error);
   root.render(
     <main className="mx-auto max-w-lg p-6">
-      <p role="alert" className="text-red-700">
+      <p role="alert" className={ALERT}>
         {stringsIt.common.unexpectedError}
       </p>
-      <button
-        type="button"
-        className="mt-4 rounded-md bg-teal-700 px-4 py-3 text-lg font-medium text-white"
-        onClick={() => window.location.reload()}
-      >
+      <button type="button" className={`mt-4 ${BUTTON}`} onClick={() => window.location.reload()}>
         {stringsIt.common.retry}
       </button>
     </main>,

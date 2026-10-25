@@ -1,15 +1,27 @@
 import { AuthError, type AuthTokens } from './auth-service';
+import { NetworkError } from './network-error';
 
 /**
  * The pure part of the Amplify service, testable without `aws-amplify`: Cognito's exception
- * names onto `AuthErrorCode` (D28), and the token pair out of an Amplify session.
+ * names onto `AuthErrorCode` (D28), Amplify's own network failure onto the SPA's
+ * `NetworkError`, and the token pair out of an Amplify session.
  */
 
-/** Cognito exception names → `AuthErrorCode`; anything else stays unexpected. */
+/** Amplify signals a request that never reached Cognito with this exception name. */
+const AMPLIFY_NETWORK_ERROR = 'NetworkError';
+/** Thrown by `signIn` while Amplify still holds a user: the caller signs out and retries. */
+export const ALREADY_AUTHENTICATED = 'UserAlreadyAuthenticatedException';
+
+export function isAlreadyAuthenticated(error: unknown): boolean {
+  return nameOf(error) === ALREADY_AUTHENTICATED;
+}
+
+/** Cognito exception names → `AuthErrorCode`; a network failure → `NetworkError`; else unchanged. */
 export function mapAmplifyError(error: unknown): unknown {
-  if (error instanceof AuthError) return error;
-  const name = (error as { name?: unknown } | null)?.name;
-  switch (name) {
+  if (error instanceof AuthError || error instanceof NetworkError) return error;
+  switch (nameOf(error)) {
+    case AMPLIFY_NETWORK_ERROR:
+      return new NetworkError(error);
     case 'CodeMismatchException':
     case 'EnableSoftwareTokenMFAException':
       return new AuthError('code_mismatch', { cause: error });
@@ -23,6 +35,9 @@ export function mapAmplifyError(error: unknown): unknown {
     case 'UserNotFoundException':
     case 'UserNotConfirmedException':
     case 'PasswordResetRequiredException':
+    case 'TokenRevokedException':
+    case 'RefreshTokenReuseException':
+    case 'UserLambdaValidationException':
       return new AuthError('not_authorized', { cause: error });
     case 'InvalidPasswordException':
       return new AuthError('invalid_password', { cause: error });
@@ -40,4 +55,8 @@ export interface AmplifySessionTokens {
 export function tokensOf(tokens: AmplifySessionTokens | undefined): AuthTokens | null {
   if (!tokens?.idToken) return null;
   return { accessToken: tokens.accessToken.toString(), idToken: tokens.idToken.toString() };
+}
+
+function nameOf(error: unknown): unknown {
+  return (error as { name?: unknown } | null)?.name;
 }

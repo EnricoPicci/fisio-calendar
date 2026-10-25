@@ -53,11 +53,11 @@ describe('Home page: who is signed in, from GET /me (architecture §7.2, WP0.7 p
     expect(api.me).toHaveBeenCalledTimes(1);
   });
 
-  it('a refused request: error$ carries the Italian message and welcome$ completes without a value', () => {
+  it('a refused request: error$ carries the Italian message and welcome$ falls back to the plain greeting', () => {
     scheduler.run(({ cold, expectObservable }) => {
       api.me.mockReturnValue(cold('--#', undefined, new ApiError('forbidden', 403)));
       const vm = new HomeViewModel(api, strings);
-      expectObservable(vm.welcome$).toBe('--|');
+      expectObservable(vm.welcome$).toBe('--(w|)', { w: strings.home.greeting });
       expectObservable(vm.error$).toBe('n-e', { n: null, e: strings.errors.forbidden });
     });
   });

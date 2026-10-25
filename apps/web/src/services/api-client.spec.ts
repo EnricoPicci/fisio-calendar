@@ -1,6 +1,10 @@
 import { PROBLEM_MEDIA_TYPE } from '@fisio/contracts';
-import { firstValueFrom, of, Subject } from 'rxjs';
+import { FixedClock } from '@fisio/domain';
+import { firstValueFrom, of, Subject, throwError } from 'rxjs';
 import { describe, expect, it } from 'vitest';
+import { fakeAuth } from '../../test/support/fake-auth';
+import { fakeTokens } from '../../test/support/jwt';
+import { SessionViewModel } from '../viewmodels/SessionViewModel';
 import { ApiError, AUTHORIZATION_HEADER, CONTENT_SHA256_HEADER, OpenApiClient } from './api-client';
 import { NetworkError } from './network-error';
 
@@ -121,6 +125,25 @@ describe('ApiClient: typed requests with the bearer token and the OAC body hash 
     const { fetch } = fakeFetch(() => json(200, { role: 'client', name: 'no id' }));
     const client = new OpenApiClient({ fetch, baseUrl: BASE_URL, accessToken$: of('tok') });
     await expect(firstValueFrom(client.me())).rejects.toThrow();
+  });
+
+  it('an offline silent refresh surfaces as a NetworkError, not as unauthenticated, and sends nothing', async () => {
+    const auth = fakeAuth();
+    auth.refresh.mockReturnValue(throwError(() => new NetworkError(new TypeError('offline'))));
+    const clock = new FixedClock('2027-03-01T08:00:00.000Z');
+    const session = new SessionViewModel(auth, clock);
+    session.start(fakeTokens('client', Math.floor(clock.now().getTime() / 1000) - 1));
+    const { fetch, requests } = fakeFetch(() => json(200, clientProfile));
+    const client = new OpenApiClient({
+      fetch,
+      baseUrl: BASE_URL,
+      accessToken$: session.accessToken$,
+    });
+
+    const failure = await firstValueFrom(client.me()).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(NetworkError);
+    expect(requests).toHaveLength(0);
   });
 
   it('a request that never reaches the server surfaces as a NetworkError', async () => {

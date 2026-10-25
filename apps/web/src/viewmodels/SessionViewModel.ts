@@ -1,3 +1,4 @@
+import { ROLES, type Role } from '@fisio/contracts';
 import type { Clock } from '@fisio/domain';
 import {
   catchError,
@@ -12,6 +13,8 @@ import {
   share,
   switchMap,
   take,
+  tap,
+  throwError,
 } from 'rxjs';
 import { ViewModel } from '../app/view-model';
 import { AuthError, type AuthService, type AuthTokens } from '../services/auth-service';
@@ -28,16 +31,20 @@ import { decodeJwtClaims } from '../services/jwt';
  *   current one is within {@link REFRESH_SKEW_SECONDS} of its expiry at the `Clock`; concurrent
  *   requests share one refresh, and a refresh runs to completion even when every request that
  *   waited on it was cancelled (a rotated refresh token must never be lost). A refresh the
- *   provider refuses ends the session: `null` is emitted and `signedOut$` explains. A refresh
- *   that fails for any other reason (offline) yields `null` for that request only and keeps the
- *   session. A refresh or a restore that answers after the session changed hands (sign-out, a
- *   new sign-in) is dropped.
+ *   provider refuses (`not_authorized`, `invalid_session`, or tokens the app cannot place) ends
+ *   the session: `null` is emitted and `signedOut$` explains. A refresh refused for a passing
+ *   reason (a lockout) yields `null` for that request and keeps the session. A refresh that
+ *   fails for any other reason (offline) errors the request with that failure, so the form
+ *   shows the offline text, and keeps the session. A refresh or a restore that answers after
+ *   the session changed hands (sign-out, a new sign-in) is dropped.
  * - `signedOut$`: why the session ended (`user` or `refresh_refused`), for the shell's notice.
  *
- * The access token must name a role the app knows: `start()` refuses one that does not (the
- * calling form shows the unexpected-error text), `restore()` and a refresh treat it as nobody.
+ * The access token must name a role the app knows (`ROLES` of the contract): `start()` refuses
+ * one that does not, and `restore()` or a refresh that hands one over ends with nobody signed
+ * in. Whenever the app refuses tokens the provider still holds, the provider is signed out too,
+ * so no credential the app will not use survives on the device.
  */
-export type SessionPage = 'loading' | 'signIn' | 'client' | 'therapist';
+export type SessionPage = 'loading' | 'signIn' | Role;
 export type SignOutReason = 'user' | 'refresh_refused';
 
 /** A token this close to expiry is refreshed before use, so a request never carries a dead one. */
@@ -48,7 +55,9 @@ export interface SessionSink {
   start(tokens: AuthTokens): void;
 }
 
-const ROLES = new Set(['client', 'therapist']);
+const KNOWN_ROLES: ReadonlySet<string> = new Set(ROLES);
+/** Refusals that end the session; any other sign-in code (a lockout) only fails the request. */
+const ENDING_REFUSALS: ReadonlySet<string> = new Set(['not_authorized', 'invalid_session']);
 
 export class SessionViewModel extends ViewModel implements SessionSink {
   readonly #auth: AuthService;
@@ -83,7 +92,10 @@ export class SessionViewModel extends ViewModel implements SessionSink {
   /** A sign-in or setup flow completed: the session starts with its tokens. */
   start(tokens: AuthTokens): void {
     const accepted = accept(tokens);
-    if (!accepted) throw new Error('The access token names no role the app knows');
+    if (!accepted) {
+      this.#forgetAtProvider();
+      throw new Error('The access token names no role the app knows');
+    }
     this.#generation += 1;
     this.#refreshing = undefined;
     this.#tokens.next(accepted);
@@ -92,37 +104,42 @@ export class SessionViewModel extends ViewModel implements SessionSink {
   /** On app start: resumes the sign-in kept on this device, if any. */
   restore(): Promise<void> {
     const generation = this.#generation;
-    return new Promise<void>((resolve) => {
-      this.own(
-        this.#auth
-          .restore()
-          .pipe(catchError(() => of(null)))
-          .subscribe({
-            next: (tokens) => {
-              // A sign-in that completed meanwhile owns the session.
-              if (generation !== this.#generation) return;
-              this.#tokens.next(tokens ? accept(tokens) : null);
-            },
-            complete: resolve,
-          }),
-      );
-    });
+    const current = () => generation === this.#generation;
+    return this.#run(
+      this.#auth.restore().pipe(
+        catchError(() => of(null)),
+        tap({
+          next: (tokens) => {
+            // A sign-in that completed meanwhile owns the session.
+            if (!current()) return;
+            const accepted = tokens ? accept(tokens) : null;
+            if (tokens && !accepted) this.#forgetAtProvider();
+            this.#tokens.next(accepted);
+          },
+          complete: () => {
+            if (current() && this.#tokens.value === undefined) this.#tokens.next(null);
+          },
+        }),
+      ),
+    );
   }
 
   /** Ends the session on this device, whether or not the provider could be told. */
   signOut(): Promise<void> {
+    return this.#run(
+      this.#auth.signOut().pipe(
+        catchError(() => of(undefined)),
+        tap({ complete: () => this.#end('user') }),
+      ),
+    );
+  }
+
+  /** Runs an owned effect; the promise settles when it ends, also on `dispose()`. */
+  #run(source$: Observable<unknown>): Promise<void> {
     return new Promise<void>((resolve) => {
-      this.own(
-        this.#auth
-          .signOut()
-          .pipe(catchError(() => of(undefined)))
-          .subscribe({
-            complete: () => {
-              this.#end('user');
-              resolve();
-            },
-          }),
-      );
+      const subscription = source$.subscribe();
+      subscription.add(resolve);
+      this.own(subscription);
     });
   }
 
@@ -141,11 +158,17 @@ export class SessionViewModel extends ViewModel implements SessionSink {
       map((tokens) => {
         if (!current()) return null;
         const accepted = accept(tokens);
+        if (!accepted) {
+          this.#forgetAtProvider();
+          this.#end('refresh_refused');
+          return null;
+        }
         this.#tokens.next(accepted);
-        return accepted?.accessToken ?? null;
+        return accepted.accessToken;
       }),
       catchError((error: unknown) => {
-        if (current() && error instanceof AuthError) this.#end('refresh_refused');
+        if (!(error instanceof AuthError)) return throwError(() => error);
+        if (current() && ENDING_REFUSALS.has(error.code)) this.#end('refresh_refused');
         return of(null);
       }),
       finalize(() => {
@@ -164,6 +187,16 @@ export class SessionViewModel extends ViewModel implements SessionSink {
     this.#signedOut.next(reason);
   }
 
+  /** Tokens the app refuses must not stay with the provider: sign it out, best effort. */
+  #forgetAtProvider(): void {
+    this.own(
+      this.#auth
+        .signOut()
+        .pipe(catchError(() => of(undefined)))
+        .subscribe(),
+    );
+  }
+
   #expiresSoon(tokens: AuthTokens): boolean {
     const exp = decodeJwtClaims(tokens.accessToken).exp;
     // A token without a usable expiry is refreshed, so the next one has a known lifetime.
@@ -175,11 +208,11 @@ export class SessionViewModel extends ViewModel implements SessionSink {
 /** Tokens the app can place: the access token names a known role. Anything else is nobody. */
 function accept(tokens: AuthTokens): AuthTokens | null {
   const role = decodeJwtClaims(tokens.accessToken).role;
-  return typeof role === 'string' && ROLES.has(role) ? tokens : null;
+  return typeof role === 'string' && KNOWN_ROLES.has(role) ? tokens : null;
 }
 
 function pageOf(tokens: AuthTokens | null | undefined): SessionPage {
   if (tokens === undefined) return 'loading';
   if (tokens === null) return 'signIn';
-  return decodeJwtClaims(tokens.accessToken).role === 'therapist' ? 'therapist' : 'client';
+  return decodeJwtClaims(tokens.accessToken).role as Role;
 }

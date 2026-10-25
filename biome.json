@@ -23,6 +23,9 @@
       "includes": ["apps/web/src/pages/**", "!apps/web/src/pages/**/*.spec.{ts,tsx}"],
       "linter": {
         "rules": {
+          "performance": {
+            "noNamespaceImport": "error"
+          },
           "style": {
             "noRestrictedImports": {
               "level": "error",
@@ -31,6 +34,7 @@
                   "rxjs": "Templates contain no logic (CLAUDE.md convention 1): subscribe through useObservable and move the pipeline into a view-model.",
                   "react": {
                     "importNames": [
+                      "default",
                       "useState",
                       "useEffect",
                       "useReducer",

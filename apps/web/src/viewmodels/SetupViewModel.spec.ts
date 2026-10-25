@@ -11,9 +11,10 @@ import { SetupViewModel } from './SetupViewModel';
 
 const LINK = '#email=terapista%40fisio.test&code=one-time-code';
 const PASSWORD = 'password-of-twelve';
+const TOTP_KEY = 'AAAABBBBCCCCDDDD';
 const provided = {
-  secret: 'JBSWY3DPEHPK3PXP',
-  otpauthUri: 'otpauth://totp/x?secret=JBSWY3DPEHPK3PXP',
+  secret: TOTP_KEY,
+  otpauthUri: `otpauth://totp/x?secret=${TOTP_KEY}`,
 };
 const enrolment = { secret: provided.secret, otpauthUri: provided.otpauthUri };
 const tokens = fakeTokens('therapist', 1_800_000_000);
@@ -142,6 +143,33 @@ describe('T1 Therapist setup link: password, then TOTP enrolment (architecture Â
       expect(session.start).not.toHaveBeenCalled();
     },
   );
+
+  it('a network failure at the password step keeps the form for a retry and reads as offline', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.startSetup.mockReturnValue(
+        cold('-#', undefined, new NetworkError(new TypeError('Failed to fetch'))),
+      );
+      void vm.startSetup(LINK, PASSWORD);
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.common.offline });
+      expectObservable(vm.step$).toBe('p', { p: 'password' });
+      expectObservable(vm.enrolment$).toBe('n', { n: null });
+    });
+  });
+
+  it('a session that refuses the tokens keeps the enrolment step: done is never reached', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      atTotpStep();
+      (session.start as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        throw new Error('no role');
+      });
+      auth.verifyTotpSetup.mockReturnValue(cold('-t|', { t: tokens }));
+      void vm.verifyTotp('123456');
+      expectObservable(vm.step$).toBe('t', { t: 'totp' });
+      expectObservable(vm.enrolment$).toBe('e', { e: enrolment });
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.common.unexpectedError });
+      expectObservable(vm.busy$).toBe('tf', { t: true, f: false });
+    });
+  });
 
   it('a network failure while verifying the first code keeps the enrolment open', () => {
     scheduler.run(({ cold, expectObservable }) => {

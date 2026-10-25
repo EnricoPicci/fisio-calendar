@@ -1,5 +1,5 @@
 import { stringsIt as strings } from '@fisio/contracts';
-import { NEVER, of, throwError } from 'rxjs';
+import { firstValueFrom, NEVER, of, throwError } from 'rxjs';
 import { TestScheduler } from 'rxjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type FakeAuthService, fakeAuth } from '../../test/support/fake-auth';
@@ -195,6 +195,15 @@ describe('C1 Client sign-in with a one-time code (architecture §3.3, §10.4)', 
     await expect(vm.confirmCode('1')).resolves.toBeUndefined();
   });
 
+  it('an effect that throws instead of returning an observable is a failure like any other', async () => {
+    auth.requestCode.mockImplementation(() => {
+      throw new TypeError('boom');
+    });
+    await expect(vm.requestCode(EMAIL)).resolves.toBeUndefined();
+    expect(await firstValueFrom(vm.busy$)).toBe(false);
+    expect(await firstValueFrom(vm.error$)).toBe(strings.common.unexpectedError);
+  });
+
   it('dispose() while an attempt is in flight settles its promise', async () => {
     auth.requestCode.mockReturnValue(NEVER);
     const pending = vm.requestCode(EMAIL);
@@ -299,6 +308,15 @@ describe('T1 Therapist sign-in with password and TOTP (architecture §3.3, §8.1
       expectObservable(vm.busy$).toBe('t-f', { t: true, f: false });
     });
     expect(session.start).toHaveBeenCalledWith(therapistTokens);
+  });
+
+  it('a network failure on the password step keeps the password form and reads as offline', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.signInWithPassword.mockReturnValue(cold('-#', undefined, offline()));
+      void vm.signInWithPassword('t@example.it', 'password-of-twelve');
+      expectObservable(vm.step$).toBe('p', { p: 'password' });
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.common.offline });
+    });
   });
 
   it('a password sign-in without an MFA step signs in at once (TOTP not yet enrolled)', () => {

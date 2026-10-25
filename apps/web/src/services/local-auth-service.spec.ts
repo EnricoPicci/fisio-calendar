@@ -10,9 +10,9 @@ import {
   testDocumentClient,
 } from '@fisio/testkit';
 import { firstValueFrom } from 'rxjs';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { AuthError } from './auth-service';
-import { LOCAL_TOKENS_KEY, LocalAuthService } from './local-auth-service';
+import { isSpentMarker, LOCAL_TOKENS_KEY, LocalAuthService } from './local-auth-service';
 import { NetworkError } from './network-error';
 import { MemoryStorage } from './storage';
 
@@ -158,6 +158,26 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
     );
   });
 
+  it('therapist without TOTP enabled: signInWithPassword() signs in at once and keeps the tokens on the device', async () => {
+    const user = await t.identity.createUser({ email: email('senza-totp'), role: 'therapist' });
+    const setupCode = await t.identity.startPasswordSetup(user.userId);
+    await t.completeSetup(setupCode, PASSWORD);
+    await t.identity.setTotpPreference(user.userId, { enabled: false, preferred: false });
+    clock.advance({ seconds: 30 });
+    const { auth, storage } = service();
+
+    const step = await firstValueFrom(auth.signInWithPassword(user.email, PASSWORD));
+
+    expect(step.kind).toBe('signed_in');
+    if (step.kind !== 'signed_in') return;
+    expect(jwtPayload(step.tokens.accessToken)).toMatchObject({
+      sub: user.userId,
+      role: 'therapist',
+    });
+    expect(storage.get(LOCAL_TOKENS_KEY)).toContain('refreshToken');
+    await expect(firstValueFrom(auth.restore())).resolves.toEqual(step.tokens);
+  });
+
   it('setup link: startSetup() returns the secret; verifyTotpSetup() with its first code signs in', async () => {
     const user = await t.identity.createUser({ email: email('nuova'), role: 'therapist' });
     await t.identity.setTotpPreference(user.userId, { enabled: true, preferred: true });
@@ -214,8 +234,8 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
 
     const subscription = auth.refresh().subscribe();
     subscription.unsubscribe();
-    // The round trip is in-process: let it finish, then the storage must hold the new pair.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The round trip is in-process and detached from the subscription: wait for its effect.
+    await vi.waitFor(() => expect(storage.get(LOCAL_TOKENS_KEY)).not.toContain(first.accessToken));
 
     const kept = await firstValueFrom(auth.restore());
     expect(kept?.accessToken).not.toBe(first.accessToken);
@@ -260,6 +280,52 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
     await expect(firstValueFrom(reloaded.refresh())).resolves.toMatchObject({
       accessToken: expect.any(String),
     });
+  });
+
+  it('a signOut() in another tab while this tab refreshes wins: the rotated pair is not written back', async () => {
+    const { auth: tabA, storage } = await signedInClient();
+    const tabB = new LocalAuthService({ issuer: t.config.issuer, fetch, storage });
+    clock.advance({ minutes: 1 });
+
+    const pending = refused(firstValueFrom(tabA.refresh()));
+    await firstValueFrom(tabB.signOut());
+
+    await expect(pending).resolves.toBe('not_authorized');
+    expect(storage.get(LOCAL_TOKENS_KEY)).toBeNull();
+    await expect(firstValueFrom(tabA.restore())).resolves.toBeNull();
+  });
+
+  it('a refresh refused after another tab signed out leaves the storage empty', async () => {
+    const { anna, auth: tabA, storage } = await signedInClient();
+    const tabB = new LocalAuthService({ issuer: t.config.issuer, fetch, storage });
+    await t.identity.globalSignOut(anna.userId);
+
+    const pending = refused(firstValueFrom(tabA.refresh()));
+    await firstValueFrom(tabB.signOut());
+
+    await expect(pending).resolves.toBe('not_authorized');
+    expect(storage.get(LOCAL_TOKENS_KEY)).toBeNull();
+  });
+
+  it('a signOut() while a refresh the emulator then refuses is in flight: not_authorized, storage empty', async () => {
+    const { anna, auth, storage } = await signedInClient();
+    await t.identity.globalSignOut(anna.userId);
+
+    const pending = refused(firstValueFrom(auth.refresh()));
+    await firstValueFrom(auth.signOut());
+
+    await expect(pending).resolves.toBe('not_authorized');
+    expect(storage.get(LOCAL_TOKENS_KEY)).toBeNull();
+  });
+
+  it('a refused refresh leaves a spent marker, which restore() reads as nobody', async () => {
+    const { anna, auth, storage } = await signedInClient();
+    await t.identity.globalSignOut(anna.userId);
+
+    await expect(refused(firstValueFrom(auth.refresh()))).resolves.toBe('not_authorized');
+
+    expect(isSpentMarker(storage.get(LOCAL_TOKENS_KEY))).toBe(true);
+    await expect(firstValueFrom(auth.restore())).resolves.toBeNull();
   });
 
   it('setup link: five wrong first codes lock the enrolment; the session is gone afterwards', async () => {

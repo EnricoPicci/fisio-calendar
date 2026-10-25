@@ -9,7 +9,8 @@ import { type SetupEnrolment, type SetupStep, SetupViewModel } from '../viewmode
 
 /**
  * The therapist's setup page (docs/architecture.md §11.5), opened by the bootstrap link
- * `/setup#email=…&code=…`: binding only. The fragment goes to the view-model as it is.
+ * `/setup#email=…&code=…`: binding only. The fragment goes to the view-model as it is. The
+ * error sits above the form, where a phone keeps it visible with the keyboard open.
  */
 export function SetupPage() {
   const { strings } = useDeps();
@@ -23,12 +24,12 @@ export function SetupPage() {
   return (
     <main className="mx-auto max-w-sm p-6">
       <h1 className="text-2xl font-semibold">{strings.setup.title}</h1>
-      <Step vm={vm} busy={busy} strings={strings} link={hash} enrolment={enrolment} />
       {error ? (
         <p role="alert" className={ALERT}>
           {error}
         </p>
       ) : null}
+      <Step vm={vm} busy={busy} strings={strings} link={hash} enrolment={enrolment} />
     </main>
   );
 }
@@ -49,7 +50,11 @@ const STEPS: Record<SetupStep, (props: StepProps) => ReactElement> = {
 
 function PasswordStep({ vm, busy, strings, link }: StepProps) {
   return (
-    <form className={FORM} onSubmit={onSubmit((f) => vm.startSetup(link, f.raw('password')))}>
+    <form
+      className={FORM}
+      aria-busy={busy}
+      onSubmit={onSubmit((f) => vm.startSetup(link, f.raw('password')))}
+    >
       <p>{strings.setup.intro}</p>
       <label className={FIELD}>
         <span>{strings.setup.passwordLabel}</span>
@@ -70,7 +75,11 @@ function PasswordStep({ vm, busy, strings, link }: StepProps) {
 
 function TotpStep({ vm, busy, strings, enrolment }: StepProps) {
   return (
-    <form className={FORM} onSubmit={onSubmit((f) => vm.verifyTotp(f.get('code')))}>
+    <form
+      className={FORM}
+      aria-busy={busy}
+      onSubmit={onSubmit((f) => vm.verifyTotp(f.get('code')))}
+    >
       <p>{strings.setup.totpIntro}</p>
       <p className={FIELD}>
         <span>{strings.setup.secretLabel}</span>

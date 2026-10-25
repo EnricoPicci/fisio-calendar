@@ -1,4 +1,5 @@
 import { FixedClock } from '@fisio/domain';
+import { NEVER, of } from 'rxjs';
 import { TestScheduler } from 'rxjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type FakeAuthService, fakeAuth } from '../../test/support/fake-auth';
@@ -14,6 +15,8 @@ const expired = fakeTokens('client', nowSeconds - 1);
 const expiringSoon = fakeTokens('client', nowSeconds + REFRESH_SKEW_SECONDS - 1);
 const fresh = fakeTokens('client', nowSeconds + 3600);
 const therapist = fakeTokens('therapist', nowSeconds + 3600);
+const roleless = { accessToken: fakeJwt({ sub: 'x', exp: nowSeconds + 3600 }), idToken: 'x' };
+const offline = () => new NetworkError(new TypeError('offline'));
 
 describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)', () => {
   let scheduler: TestScheduler;
@@ -23,6 +26,7 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
   beforeEach(() => {
     scheduler = new TestScheduler((actual, expected) => expect(actual).toEqual(expected));
     auth = fakeAuth();
+    auth.signOut.mockReturnValue(of(undefined));
     vm = new SessionViewModel(auth, new FixedClock(NOW));
   });
 
@@ -90,13 +94,33 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
     });
   });
 
-  it('a refresh that fails for a network error keeps the session: null for this request only', () => {
+  it('a refresh that yields tokens without a known role ends the session like a refused one, and the provider is signed out', () => {
     scheduler.run(({ cold, expectObservable }) => {
-      auth.refresh.mockReturnValue(
-        cold('--#', undefined, new NetworkError(new TypeError('offline'))),
-      );
+      auth.refresh.mockReturnValue(cold('--r|', { r: roleless }));
+      vm.start(expired);
+      expectObservable(vm.accessToken$).toBe('--n|', { n: null });
+      expectObservable(vm.page$).toBe('c-s', { c: 'client', s: 'signIn' });
+      expectObservable(vm.signedOut$).toBe('--s', { s: 'refresh_refused' });
+    });
+    expect(auth.signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refresh refused for a passing reason (a lockout) fails this request only and keeps the session', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.refresh.mockReturnValue(cold('--#', undefined, new AuthError('too_many_attempts')));
       vm.start(expired);
       expectObservable(vm.accessToken$).toBe('--(n|)', { n: null });
+      expectObservable(vm.signedOut$).toBe('----');
+      expectObservable(vm.page$).toBe('c', { c: 'client' });
+    });
+  });
+
+  it('a refresh that fails for a network error keeps the session and errors the request as offline', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      const failure = offline();
+      auth.refresh.mockReturnValue(cold('--#', undefined, failure));
+      vm.start(expired);
+      expectObservable(vm.accessToken$).toBe('--#', undefined, failure);
       expectObservable(vm.signedOut$).toBe('----');
       expectObservable(vm.page$).toBe('c', { c: 'client' });
     });
@@ -113,6 +137,19 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
       expectObservable(vm.signedOut$).toBe('---u', { u: 'user' });
     });
     expect(auth.signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('start() during a silent refresh wins: the late refresh does not replace the new session', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.refresh.mockReturnValue(cold('----r|', { r: fresh }));
+      vm.start(expired);
+      expectObservable(vm.accessToken$).toBe('----n|', { n: null });
+      scheduler.schedule(() => vm.start(therapist), 1);
+      expectObservable(vm.page$).toBe('ct', { c: 'client', t: 'therapist' });
+      expectObservable(vm.signedOut$).toBe('------');
+      expectObservable(vm.accessToken$, '-----^').toBe('-----(a|)', { a: therapist.accessToken });
+    });
+    expect(auth.refresh).toHaveBeenCalledTimes(1);
   });
 
   it('nobody signed in: accessToken$ yields null and no refresh is attempted', () => {
@@ -149,23 +186,35 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
     });
   });
 
-  it('a restore that fails leaves nobody signed in', () => {
+  it('a restore that fails, or completes without a value, leaves nobody signed in', () => {
     scheduler.run(({ cold, expectObservable }) => {
       auth.restore.mockReturnValue(cold('-#', undefined, new Error('storage unavailable')));
       void vm.restore();
       expectObservable(vm.page$).toBe('ls', { l: 'loading', s: 'signIn' });
     });
+    const second = new SessionViewModel(auth, new FixedClock(NOW));
+    new TestScheduler((actual, expected) => expect(actual).toEqual(expected)).run(
+      ({ cold, expectObservable }) => {
+        auth.restore.mockReturnValue(cold('--|'));
+        void second.restore();
+        expectObservable(second.page$).toBe('l-s', { l: 'loading', s: 'signIn' });
+      },
+    );
   });
 
-  it('start() refuses tokens whose access token names no known role; restore() treats them as nobody', () => {
-    const unusable = { accessToken: fakeJwt({ sub: 'x', exp: nowSeconds + 3600 }), idToken: 'x' };
-    expect(() => vm.start(unusable)).toThrow(/role/);
+  it('start() refuses tokens whose access token names no known role and signs the provider out', () => {
+    expect(() => vm.start(roleless)).toThrow(/role/);
+    expect(auth.signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('restore() treats tokens without a known role as nobody and signs the provider out', () => {
     scheduler.run(({ cold, expectObservable }) => {
-      auth.restore.mockReturnValue(cold('-u|', { u: unusable }));
+      auth.restore.mockReturnValue(cold('-u|', { u: roleless }));
       void vm.restore();
       expectObservable(vm.page$).toBe('ls', { l: 'loading', s: 'signIn' });
       expectObservable(vm.accessToken$).toBe('-(n|)', { n: null });
     });
+    expect(auth.signOut).toHaveBeenCalledTimes(1);
   });
 
   it('a restore() that answers after a sign-in completed does not replace that session', () => {
@@ -190,9 +239,7 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
 
   it('signOut() ends the session on the device even when the provider cannot be told', () => {
     scheduler.run(({ cold, expectObservable }) => {
-      auth.signOut.mockReturnValue(
-        cold('-#', undefined, new NetworkError(new TypeError('offline'))),
-      );
+      auth.signOut.mockReturnValue(cold('-#', undefined, offline()));
       vm.start(valid);
       void vm.signOut();
       expectObservable(vm.page$).toBe('cs', { c: 'client', s: 'signIn' });
@@ -206,12 +253,19 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
     });
   });
 
-  it('dispose() completes the streams', () => {
+  it('dispose() completes the streams and settles a pending restore() or signOut()', async () => {
+    auth.restore.mockReturnValue(NEVER);
+    const pending = vm.restore();
     scheduler.run(({ expectObservable }) => {
-      vm.start(valid);
       vm.dispose();
       expectObservable(vm.page$).toBe('|');
       expectObservable(vm.signedOut$).toBe('|');
     });
+    await expect(
+      Promise.race([
+        pending,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('hung')), 50)),
+      ]),
+    ).resolves.toBeUndefined();
   });
 });

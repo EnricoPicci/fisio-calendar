@@ -540,7 +540,7 @@
 
 ### Amplify sign-in flows are unverified until the `dev` pool exists
 
-**What:** Run the WP0.10 spike against `AmplifyAuthService` (`apps/web/src/services/amplify-auth-service.ts`): `signIn` with `USER_AUTH`/`EMAIL_OTP` for an `AdminCreateUser` client, `PASSWORD_SRP` then `CONFIRM_SIGN_IN_WITH_TOTP_CODE` for the therapist, the setup link (`PASSWORD` with the temporary password → `NEW_PASSWORD_REQUIRED` → `setUpTOTP` → `verifyTOTPSetup` → `updateMFAPreference`), and the exception names the service maps to `AuthErrorCode` (`CodeMismatchException`, `NotAuthorizedException`, `TooManyRequestsException`, …). Check that the app client has "prevent user existence errors" on, so an unknown email in the code flow does not surface as `UserNotFoundException`.
+**What:** Run the WP0.10 spike against `AmplifyAuthService` (`apps/web/src/services/amplify-auth-service.ts`): `signIn` with `USER_AUTH`/`EMAIL_OTP` for an `AdminCreateUser` client, `PASSWORD_SRP` then `CONFIRM_SIGN_IN_WITH_TOTP_CODE` for the therapist, the setup link (`PASSWORD` with the temporary password → `NEW_PASSWORD_REQUIRED` → `setUpTOTP` → `verifyTOTPSetup` → `updateMFAPreference`), and the exception names the service maps (`CodeMismatchException`, `NotAuthorizedException`, `TooManyRequestsException`, `TokenRevokedException`, `RefreshTokenReuseException`, `UserLambdaValidationException`, Amplify's own `NetworkError`, and `UserAlreadyAuthenticatedException`, which the service answers with a sign-out and one retry). Check that the app client has "prevent user existence errors" on, so an unknown email in the code flow does not surface as `UserNotFoundException`, and that `fetchAuthSession()` on an expired access token while offline rejects the way the service expects (the session then shows the sign-in page and the next sign-in attempt recovers through the retry).
 
 **Why:** WP0.7 wrote the Amplify service from the documented API (implementation plan §9, spike row WP0.7); only the local service runs in the suite. A wrong step name or exception name shows up as a sign-in that never completes on `dev`.
 
@@ -561,6 +561,42 @@
 **Effort:** S
 **Priority:** P2
 **Depends on:** WP0.8 (J7).
+
+### A therapist with a password but no TOTP cannot finish the enrolment from the SPA
+
+**What:** Give a signed-in therapist whose TOTP is not enabled a way to finish the enrolment (`setUpTOTP` → `verifyTOTPSetup` → `updateMFAPreference`) instead of a `not_authorized` refusal, or at least a dedicated message pointing at a bootstrap re-run.
+
+**Why:** On Cognito the setup link's password step completes before the enrolment; if the tab closes, `verifyTOTPSetup` succeeds but `updateMFAPreference` fails, or a lockout hits, she has a password and no MFA. `AmplifyAuthService` then refuses every password sign-in (TOTP guard) with the wrong-password sentence, and the temporary password is spent, so only `bootstrap:therapist --stage dev` recovers. The emulator retires the setup code only at `verifyTotpSetup`, so the local suite cannot show it.
+
+**Context:** Adversarial finding of the WP0.7 ship review. Related: server-side TOTP control (below).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (pool), WP0.10 (spike).
+
+### Sign-out does not reach the other tabs
+
+**What:** Observe a sign-out made in another tab (a `storage` event on the local tokens key; Amplify's Hub `signedOut` / `tokenRefresh_failure` events) and end this tab's session with `signedOut$`.
+
+**Why:** `signOut()` clears the provider's storage and this tab's session; another open tab keeps its in-memory access token and keeps calling the API until the token nears expiry (up to an hour). On a shared device, "Esci" in one tab leaves the other usable. The local service already refuses to write a rotated pair back after another tab signed out; the in-memory session is the remaining half.
+
+**Context:** Security finding of the WP0.7 ship review.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.8 (a two-session journey to prove it).
+
+### Where the cloud build keeps its tokens
+
+**What:** Decide whether Amplify's default token store (`localStorage`, including the 30-day rotating refresh token) is acceptable under WP0.9's CSP, or switch `configureAmplify` to `cognitoUserPoolsTokenProvider.setKeyValueStorage(...)` with `sessionStorage` or cookie storage; record the choice in architecture §8.1.
+
+**Why:** The local build's `localStorage` tokens were known; the cloud build is not exempt, Amplify's `defaultStorage` is `localStorage` in a browser.
+
+**Context:** Security finding of the WP0.7 ship review.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9.
 
 ### No bounded wait on sign-in, setup and API round trips
 
@@ -644,7 +680,7 @@
 
 **What:** Measure what `@fisio/contracts` (Zod schemas, used by `OpenApiClient` to parse responses) and `@fisio/domain` (date-fns + tz) add to the main chunk (413 kB before gzip after WP0.7, 128 kB gzipped) and decide: keep response parsing with Zod, parse with lighter checks, or split the contracts package so the SPA imports only the types and the strings.
 
-**Why:** Clients open the calendar on phones; the bundle should stay small. The parsing was chosen so a server that drifts from the contract fails at the client boundary.
+**Why:** Clients open the calendar on phones; the bundle should stay small. The parsing was chosen so a server that drifts from the contract fails at the client boundary. Two more build-time items for the cloud build (WP0.9): the Amplify chunk is requested only after the main chunk has executed (a `modulepreload` hint when `VITE_AUTH=amplify`, or a build-time static import, removes one round trip from the first paint), and long-lived dependencies (react, rxjs, zod) share the app chunk's hash, so every deploy re-downloads them (a vendor chunk through `output.advancedChunks`/`manualChunks` keeps them cached).
 
 **Effort:** S
 **Priority:** P3

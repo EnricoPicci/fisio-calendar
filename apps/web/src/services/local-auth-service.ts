@@ -56,6 +56,13 @@ const EmulatorEnrolment = z.object({
 const StoredTokens = EmulatorTokens.omit({ expiresIn: true });
 type StoredTokens = z.infer<typeof StoredTokens>;
 
+/**
+ * What a refused refresh leaves behind instead of the dead pair: `restore()` reads it as
+ * nobody, and a refresh of the same pair that another tab wins meanwhile can tell this
+ * marker (keep the rotated pair) from a sign-out (the key is gone: stay signed out).
+ */
+const SpentMarker = z.object({ spent: z.string().min(1) });
+
 export class LocalAuthService implements AuthService {
   readonly #issuer: string;
   readonly #fetch: typeof fetch;
@@ -114,16 +121,17 @@ export class LocalAuthService implements AuthService {
   restore(): Observable<AuthTokens | null> {
     return defer(() => {
       const stored = this.#stored();
-      return of(stored ? { accessToken: stored.accessToken, idToken: stored.idToken } : null);
+      return of(stored ? pick(stored) : null);
     });
   }
 
   /**
    * The whole round trip runs inside one promise, so an unsubscribed caller cannot lose the
    * rotated refresh token: the emulator spends the old one whatever happens to the answer.
-   * The storage is shared by every tab of the device: a tab that finds the stored refresh token
-   * already rotated by another one (the emulator refused the spent token, or the answer arrived
-   * second) adopts the stored pair instead of signing the device out.
+   * The storage is shared by every tab of the device: a tab that finds the pair already
+   * rotated by another one adopts the stored pair; a tab that finds the key removed (a sign-out
+   * in this or another tab) stays signed out; a refused refresh leaves a spent marker, not the
+   * dead pair.
    */
   refresh(): Observable<AuthTokens> {
     return defer(() => {
@@ -149,8 +157,10 @@ export class LocalAuthService implements AuthService {
         { refreshToken: stored.refreshToken },
         EmulatorTokens,
       );
-      // A sign-out meanwhile: the device must stay signed out.
-      if (this.#signedOut) throw new AuthError('not_authorized');
+      // A sign-out meanwhile, in this tab or another: the device must stay signed out.
+      if (this.#signedOut || this.#storage.get(LOCAL_TOKENS_KEY) === null) {
+        throw new AuthError('not_authorized');
+      }
       const now = this.#stored();
       // Another tab rotated first: its pair is the live one, this answer is a dead end.
       if (now && now.refreshToken !== stored.refreshToken) return pick(now);
@@ -160,9 +170,11 @@ export class LocalAuthService implements AuthService {
         const now = this.#stored();
         // Another tab already rotated the pair this call was refused for: use it.
         if (now && now.refreshToken !== stored.refreshToken) return pick(now);
-        // The emulator spends a refresh token it refuses: nothing here can be reused. Only the
-        // pair this call used is dropped; a pair another tab stores meanwhile stays.
-        if (now) this.#storage.remove(LOCAL_TOKENS_KEY);
+        // The emulator spends a refresh token it refuses: leave a marker in place of the
+        // dead pair, so a tab whose refresh of the same pair wins can still keep its answer.
+        if (now?.refreshToken === stored.refreshToken) {
+          this.#storage.set(LOCAL_TOKENS_KEY, JSON.stringify({ spent: stored.refreshToken }));
+        }
       }
       throw error;
     }
@@ -223,6 +235,16 @@ export class LocalAuthService implements AuthService {
     const code = (json as { code?: unknown } | undefined)?.code;
     if (typeof code === 'string' && isAuthErrorCode(code)) throw new AuthError(code);
     throw new Error(`The auth emulator answered ${response.status} ${String(code ?? '')}`);
+  }
+}
+
+/** True when the storage holds the spent marker a refused refresh leaves. */
+export function isSpentMarker(raw: string | null): boolean {
+  if (!raw) return false;
+  try {
+    return SpentMarker.safeParse(JSON.parse(raw)).success;
+  } catch {
+    return false;
   }
 }
 

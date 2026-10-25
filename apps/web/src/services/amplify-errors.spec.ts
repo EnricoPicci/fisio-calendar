@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { mapAmplifyError, tokensOf } from './amplify-errors';
+import { isAlreadyAuthenticated, mapAmplifyError, tokensOf } from './amplify-errors';
 import { AuthError } from './auth-service';
+import { NetworkError } from './network-error';
+
+const exceptionNamed = (name: string) => Object.assign(new Error(name), { name });
 
 describe('Cognito exceptions onto AuthErrorCode (architecture D28, Amplify service)', () => {
   it.each([
@@ -14,6 +17,9 @@ describe('Cognito exceptions onto AuthErrorCode (architecture D28, Amplify servi
     ['UserNotFoundException', 'not_authorized'],
     ['UserNotConfirmedException', 'not_authorized'],
     ['PasswordResetRequiredException', 'not_authorized'],
+    ['TokenRevokedException', 'not_authorized'],
+    ['RefreshTokenReuseException', 'not_authorized'],
+    ['UserLambdaValidationException', 'not_authorized'],
     ['InvalidPasswordException', 'invalid_password'],
   ])('%s → %s, keeping the exception as the cause', (name, code) => {
     const cause = Object.assign(new Error(name), { name });
@@ -25,6 +31,20 @@ describe('Cognito exceptions onto AuthErrorCode (architecture D28, Amplify servi
   it('an AuthError passes through unchanged', () => {
     const error = new AuthError('invalid_session');
     expect(mapAmplifyError(error)).toBe(error);
+  });
+
+  it("Amplify's NetworkError becomes the SPA's NetworkError, with the original as the cause", () => {
+    const cause = Object.assign(new Error('fetch failed'), { name: 'NetworkError' });
+    const mapped = mapAmplifyError(cause);
+    expect(mapped).toBeInstanceOf(NetworkError);
+    expect((mapped as NetworkError).cause).toBe(cause);
+    expect(mapAmplifyError(mapped)).toBe(mapped);
+  });
+
+  it('isAlreadyAuthenticated() recognises the sign-in refused for a user still held', () => {
+    expect(isAlreadyAuthenticated(exceptionNamed('UserAlreadyAuthenticatedException'))).toBe(true);
+    expect(isAlreadyAuthenticated(exceptionNamed('NotAuthorizedException'))).toBe(false);
+    expect(isAlreadyAuthenticated(null)).toBe(false);
   });
 
   it('an unknown exception, a plain error and a non-error pass through unchanged', () => {

@@ -14,9 +14,10 @@ import { SetupPage } from './SetupPage';
 
 /** Template binding tests (architecture §10.1) for the therapist's setup link. */
 const LINK = '/setup#email=terapista%40fisio.test&code=one-time-code';
+const TOTP_KEY = 'AAAABBBBCCCCDDDD';
 const enrolment = {
-  secret: 'JBSWY3DPEHPK3PXP',
-  otpauthUri: 'otpauth://totp/x?secret=JBSWY3DPEHPK3PXP',
+  secret: TOTP_KEY,
+  otpauthUri: `otpauth://totp/x?secret=${TOTP_KEY}`,
 };
 
 function renderSetup(auth: FakeAuthService, link = LINK) {

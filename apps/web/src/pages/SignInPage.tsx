@@ -8,7 +8,8 @@ import { type SignInStep, SignInViewModel } from '../viewmodels/SignInViewModel'
 
 /**
  * The sign-in page (docs/architecture.md §7.2): binding only. The view-model's `step$` picks the
- * form; every form reads its fields on submit and calls one view-model method.
+ * form; every form reads its fields on submit and calls one view-model method. The error sits
+ * above the form, in the part of the viewport a phone keeps visible with the keyboard open.
  */
 export function SignInPage() {
   const { strings } = useDeps();
@@ -20,12 +21,12 @@ export function SignInPage() {
   return (
     <main className="mx-auto max-w-sm p-6">
       <h1 className="text-2xl font-semibold">{strings.auth.title}</h1>
-      <Form vm={vm} busy={busy} strings={strings} />
       {error ? (
         <p role="alert" className={ALERT}>
           {error}
         </p>
       ) : null}
+      <Form vm={vm} busy={busy} strings={strings} />
     </main>
   );
 }
@@ -45,7 +46,11 @@ const FORMS: Record<SignInStep, (props: FormProps) => ReactElement> = {
 
 function EmailForm({ vm, busy, strings }: FormProps) {
   return (
-    <form className={FORM} onSubmit={onSubmit((f) => vm.requestCode(f.get('email')))}>
+    <form
+      className={FORM}
+      aria-busy={busy}
+      onSubmit={onSubmit((f) => vm.requestCode(f.get('email')))}
+    >
       <label className={FIELD}>
         <span>{strings.auth.emailLabel}</span>
         <input name="email" type="email" autoComplete="email" required className={INPUT} />
@@ -53,7 +58,12 @@ function EmailForm({ vm, busy, strings }: FormProps) {
       <button type="submit" disabled={busy} className={BUTTON}>
         {strings.auth.requestCode}
       </button>
-      <button type="button" className={LINK} onClick={() => vm.showTherapistSignIn()}>
+      <button
+        type="button"
+        disabled={busy}
+        className={LINK}
+        onClick={() => vm.showTherapistSignIn()}
+      >
         {strings.auth.therapistLink}
       </button>
     </form>
@@ -62,7 +72,11 @@ function EmailForm({ vm, busy, strings }: FormProps) {
 
 function CodeForm({ vm, busy, strings }: FormProps) {
   return (
-    <form className={FORM} onSubmit={onSubmit((f) => vm.confirmCode(f.get('code')))}>
+    <form
+      className={FORM}
+      aria-busy={busy}
+      onSubmit={onSubmit((f) => vm.confirmCode(f.get('code')))}
+    >
       <p>{strings.auth.codeSent}</p>
       <label className={FIELD}>
         <span>{strings.auth.codeLabel}</span>
@@ -77,7 +91,7 @@ function CodeForm({ vm, busy, strings }: FormProps) {
       <button type="submit" disabled={busy} className={BUTTON}>
         {strings.auth.confirmCode}
       </button>
-      <button type="button" className={LINK} onClick={() => vm.showClientSignIn()}>
+      <button type="button" disabled={busy} className={LINK} onClick={() => vm.showClientSignIn()}>
         {strings.auth.changeEmail}
       </button>
     </form>
@@ -88,6 +102,7 @@ function PasswordForm({ vm, busy, strings }: FormProps) {
   return (
     <form
       className={FORM}
+      aria-busy={busy}
       onSubmit={onSubmit((f) => vm.signInWithPassword(f.get('email'), f.raw('password')))}
     >
       <label className={FIELD}>
@@ -107,7 +122,7 @@ function PasswordForm({ vm, busy, strings }: FormProps) {
       <button type="submit" disabled={busy} className={BUTTON}>
         {strings.auth.continueWithPassword}
       </button>
-      <button type="button" className={LINK} onClick={() => vm.showClientSignIn()}>
+      <button type="button" disabled={busy} className={LINK} onClick={() => vm.showClientSignIn()}>
         {strings.auth.clientLink}
       </button>
     </form>
@@ -116,7 +131,11 @@ function PasswordForm({ vm, busy, strings }: FormProps) {
 
 function TotpForm({ vm, busy, strings }: FormProps) {
   return (
-    <form className={FORM} onSubmit={onSubmit((f) => vm.confirmTotp(f.get('code')))}>
+    <form
+      className={FORM}
+      aria-busy={busy}
+      onSubmit={onSubmit((f) => vm.confirmTotp(f.get('code')))}
+    >
       <label className={FIELD}>
         <span>{strings.auth.totpLabel}</span>
         <input
@@ -130,7 +149,12 @@ function TotpForm({ vm, busy, strings }: FormProps) {
       <button type="submit" disabled={busy} className={BUTTON}>
         {strings.auth.confirmTotp}
       </button>
-      <button type="button" className={LINK} onClick={() => vm.showTherapistSignIn()}>
+      <button
+        type="button"
+        disabled={busy}
+        className={LINK}
+        onClick={() => vm.showTherapistSignIn()}
+      >
         {strings.common.cancel}
       </button>
     </form>

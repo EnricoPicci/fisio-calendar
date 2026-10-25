@@ -10,7 +10,7 @@ import {
   verifyTOTPSetup,
 } from 'aws-amplify/auth';
 import { defer, from, type Observable } from 'rxjs';
-import { mapAmplifyError, tokensOf } from './amplify-errors';
+import { isAlreadyAuthenticated, mapAmplifyError, tokensOf } from './amplify-errors';
 import {
   AuthError,
   type AuthService,
@@ -24,22 +24,24 @@ import { decodeJwtClaims } from './jwt';
 /**
  * The `AuthService` of the cloud build (docs/architecture.md §8.1): Amplify Auth against the
  * Cognito pool. Clients: `USER_AUTH` with `EMAIL_OTP` as the preferred challenge; the email step
- * answers the same whatever Cognito says about the address, and the code step then fails as a
- * wrong code without a round trip (no account enumeration at either step, C1). Therapist:
- * password (SRP) followed by the `SOFTWARE_TOKEN_MFA` challenge Cognito issues while TOTP is her
- * preferred MFA.
+ * answers the same whatever Cognito says about the address (a lockout excepted, which is no
+ * enumeration signal), and the code step then fails as a wrong code without a round trip (C1).
+ * Therapist: password (SRP) followed by the `SOFTWARE_TOKEN_MFA` challenge Cognito issues while
+ * TOTP is her preferred MFA.
  *
  * The setup link signs in with the temporary password, answers `NEW_PASSWORD_REQUIRED`, then
  * enrols TOTP and makes it preferred (§15: a password alone never counts as a finished setup).
  * Cognito completes that sign-in before the enrolment, and Amplify keeps its tokens; so a setup
  * that fails after the password step signs out again, and no path hands out a therapist session
  * whose TOTP is not enabled: every token issuance, `restore()` and `refresh()` go through the
- * same guard. The server-side control is WP0.9's (TODOS.md).
+ * same guard, whose positive answer is remembered per access token. The server-side control is
+ * WP0.9's (TODOS.md).
  *
- * Amplify keeps and refreshes the tokens itself; `refresh()` forces one. Cognito's exceptions are
- * mapped onto `AuthErrorCode` (D28). Verified against the real pool only on `dev` (WP0.10 spike,
- * implementation plan §9): until then the flow names and the exception names are the documented
- * ones.
+ * Amplify keeps and refreshes the tokens itself; `refresh()` forces one. A sign-in started
+ * while Amplify still holds a user (the app refused its tokens, or an offline restore) signs
+ * that user out and retries once. Cognito's exceptions are mapped onto `AuthErrorCode` (D28).
+ * Verified against the real pool only on `dev` (WP0.10 spike, implementation plan §9): until
+ * then the flow names and the exception names are the documented ones.
  */
 export interface AmplifyAuthConfig {
   readonly userPoolId: string;
@@ -63,21 +65,28 @@ export function configureAmplify(config: AmplifyAuthConfig): void {
 export class AmplifyAuthService implements AuthService {
   /** True when the last `requestCode()` was refused by Cognito: no sign-in is in progress. */
   #codeRefused = false;
+  /** Access tokens whose therapist has TOTP enabled: one `fetchMFAPreference` per token pair. */
+  readonly #enrolled = new Set<string>();
 
   requestCode(email: string): Observable<void> {
     return effect(async () => {
       this.#codeRefused = false;
       try {
-        const step = await signIn({
-          username: email,
-          options: { authFlowType: 'USER_AUTH', preferredChallenge: 'EMAIL_OTP' },
-        });
+        const step = await freshSignIn(() =>
+          signIn({
+            username: email,
+            options: { authFlowType: 'USER_AUTH', preferredChallenge: 'EMAIL_OTP' },
+          }),
+        );
         if (step.nextStep.signInStep !== 'CONFIRM_SIGN_IN_WITH_EMAIL_CODE') {
           throw new AuthError('not_authorized');
         }
       } catch (error) {
-        // Unknown, disabled or otherwise refused address: same answer as a client's.
-        if (!(mapAmplifyError(error) instanceof AuthError)) throw error;
+        const mapped = mapAmplifyError(error);
+        if (!(mapped instanceof AuthError)) throw error;
+        // A lockout is worth telling; any other refusal answers like a client's address.
+        if (mapped.code === 'too_many_attempts') throw mapped;
+        console.warn('[auth] code request refused', mapped.code);
         this.#codeRefused = true;
       }
     });
@@ -93,12 +102,14 @@ export class AmplifyAuthService implements AuthService {
 
   signInWithPassword(email: string, password: string): Observable<PasswordSignInStep> {
     return effect(async (): Promise<PasswordSignInStep> => {
-      const step = await signIn({
-        username: email,
-        password,
-        options: { authFlowType: 'USER_AUTH', preferredChallenge: 'PASSWORD_SRP' },
-      });
-      if (step.isSignedIn) return { kind: 'signed_in', tokens: await currentTokens() };
+      const step = await freshSignIn(() =>
+        signIn({
+          username: email,
+          password,
+          options: { authFlowType: 'USER_AUTH', preferredChallenge: 'PASSWORD_SRP' },
+        }),
+      );
+      if (step.isSignedIn) return { kind: 'signed_in', tokens: await this.#currentTokens() };
       if (step.nextStep.signInStep === 'CONFIRM_SIGN_IN_WITH_TOTP_CODE') {
         return { kind: 'totp_required' };
       }
@@ -113,11 +124,13 @@ export class AmplifyAuthService implements AuthService {
   startSetup(input: SetupInput): Observable<TotpEnrolment> {
     return effect(async () => {
       try {
-        const step = await signIn({
-          username: input.email,
-          password: input.code,
-          options: { authFlowType: 'USER_AUTH', preferredChallenge: 'PASSWORD' },
-        });
+        const step = await freshSignIn(() =>
+          signIn({
+            username: input.email,
+            password: input.code,
+            options: { authFlowType: 'USER_AUTH', preferredChallenge: 'PASSWORD' },
+          }),
+        );
         if (step.nextStep.signInStep !== 'CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED') {
           throw new AuthError('not_authorized');
         }
@@ -140,21 +153,21 @@ export class AmplifyAuthService implements AuthService {
     return effect(async () => {
       await verifyTOTPSetup({ code });
       await updateMFAPreference({ totp: 'PREFERRED' });
-      return currentTokens();
+      return this.#currentTokens();
     });
   }
 
   restore(): Observable<AuthTokens | null> {
     return effect(async () => {
       const session = await fetchAuthSession();
-      return enrolledOnly(tokensOf(session.tokens));
+      return this.#enrolledOnly(tokensOf(session.tokens));
     });
   }
 
   refresh(): Observable<AuthTokens> {
     return effect(async () => {
       const session = await fetchAuthSession({ forceRefresh: true });
-      const tokens = await enrolledOnly(tokensOf(session.tokens));
+      const tokens = await this.#enrolledOnly(tokensOf(session.tokens));
       if (!tokens) throw new AuthError('not_authorized');
       return tokens;
     });
@@ -167,24 +180,39 @@ export class AmplifyAuthService implements AuthService {
   async #confirm(code: string): Promise<AuthTokens> {
     const step = await confirmSignIn({ challengeResponse: code });
     if (!step.isSignedIn) throw new AuthError('code_mismatch');
-    return currentTokens();
+    return this.#currentTokens();
+  }
+
+  /** The tokens of the sign-in just completed, through the TOTP guard. */
+  async #currentTokens(): Promise<AuthTokens> {
+    const tokens = await this.#enrolledOnly(tokensOf((await fetchAuthSession()).tokens));
+    if (!tokens) throw new AuthError('not_authorized');
+    return tokens;
+  }
+
+  /** A therapist session counts only with TOTP enabled; anything else is signed out. */
+  async #enrolledOnly(tokens: AuthTokens | null): Promise<AuthTokens | null> {
+    if (!tokens || decodeJwtClaims(tokens.accessToken).role !== 'therapist') return tokens;
+    if (this.#enrolled.has(tokens.accessToken)) return tokens;
+    const preference = await fetchMFAPreference();
+    if (preference.enabled?.includes('TOTP')) {
+      this.#enrolled.add(tokens.accessToken);
+      return tokens;
+    }
+    await signOut().catch(() => undefined);
+    return null;
   }
 }
 
-/** The tokens of the sign-in just completed, through the TOTP guard. */
-async function currentTokens(): Promise<AuthTokens> {
-  const tokens = await enrolledOnly(tokensOf((await fetchAuthSession()).tokens));
-  if (!tokens) throw new AuthError('not_authorized');
-  return tokens;
-}
-
-/** A therapist session counts only with TOTP enabled; anything else is signed out. */
-async function enrolledOnly(tokens: AuthTokens | null): Promise<AuthTokens | null> {
-  if (!tokens || decodeJwtClaims(tokens.accessToken).role !== 'therapist') return tokens;
-  const preference = await fetchMFAPreference();
-  if (preference.enabled?.includes('TOTP')) return tokens;
-  await signOut().catch(() => undefined);
-  return null;
+/** A sign-in that Amplify refuses because a user is still held: sign out, retry once. */
+async function freshSignIn<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isAlreadyAuthenticated(error)) throw error;
+    await signOut().catch(() => undefined);
+    return run();
+  }
 }
 
 /** A promise-returning Amplify call as a cold Observable, its exceptions mapped. */
