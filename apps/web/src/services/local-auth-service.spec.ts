@@ -158,7 +158,7 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
     );
   });
 
-  it('therapist without TOTP enabled: signInWithPassword() signs in at once and keeps the tokens on the device', async () => {
+  it('therapist without TOTP enabled: signInWithPassword() passes the tokens through (SignInViewModel refuses them: a password alone never signs her in)', async () => {
     const user = await t.identity.createUser({ email: email('senza-totp'), role: 'therapist' });
     const setupCode = await t.identity.startPasswordSetup(user.userId);
     await t.completeSetup(setupCode, PASSWORD);
