@@ -2,10 +2,10 @@
 // Usage: node tools/local/src/create-table.ts [stage]   (default stage: local -> fisio-local)
 // Runs through Node's type stripping, so it needs Node >= 22.18 (develop on 24, `.nvmrc`).
 import { tableName } from '@fisio/infra/table-definition';
-import { DEFAULT_LOCAL_ENDPOINT, ensureTable, localDynamoClient } from './table.ts';
+import { ensureTable, localDynamoClient, localEndpoint } from './table.ts';
 
 const name = tableName(process.argv[2] ?? 'local');
-const endpoint = process.env.DYNAMODB_ENDPOINT || DEFAULT_LOCAL_ENDPOINT;
+const endpoint = localEndpoint();
 const client = localDynamoClient(endpoint);
 try {
   const created = await ensureTable(client, name);

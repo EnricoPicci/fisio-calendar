@@ -24,42 +24,51 @@ export class TableDefinitionMismatchError extends Error {
 }
 
 /**
- * A client for DynamoDB Local: fixed region and dummy credentials, never the real account. A
- * blank `DYNAMODB_ENDPOINT` counts as unset (an empty endpoint would make the SDK resolve the
- * real regional endpoint). Short timeouts so a stalled container fails a run instead of hanging.
+ * The DynamoDB Local endpoint: `DYNAMODB_ENDPOINT`, else http://localhost:8000. A blank value
+ * counts as unset: an empty endpoint would make the SDK resolve the real regional endpoint.
  */
-export function localDynamoClient(
-  endpoint: string = process.env.DYNAMODB_ENDPOINT || DEFAULT_LOCAL_ENDPOINT,
-): DynamoDBClient {
+export function localEndpoint(): string {
+  return process.env.DYNAMODB_ENDPOINT || DEFAULT_LOCAL_ENDPOINT;
+}
+
+/**
+ * A client for DynamoDB Local: fixed region and dummy credentials, never the real account.
+ * Short timeouts that reject (`throwOnRequestTimeout`; without it the SDK only logs a warning),
+ * so a stalled container fails a run instead of hanging it.
+ */
+export function localDynamoClient(endpoint: string = localEndpoint()): DynamoDBClient {
   return new DynamoDBClient({
     endpoint,
     region: 'eu-central-1',
     credentials: { accessKeyId: 'local', secretAccessKey: 'local' },
     maxAttempts: 1,
-    requestHandler: { connectionTimeout: 2_000, requestTimeout: 5_000 },
+    requestHandler: {
+      connectionTimeout: 2_000,
+      requestTimeout: 5_000,
+      throwOnRequestTimeout: true,
+    },
   });
 }
 
 /** The CreateTable request for `name`, derived from the shared definition. */
 export function createTableInput(name: string): CreateTableCommandInput {
-  const definition = TABLE_DEFINITION;
-  const keyNames = new Set([definition.partitionKey, definition.sortKey]);
-  for (const index of definition.globalSecondaryIndexes) {
+  const keyNames = new Set([TABLE_DEFINITION.partitionKey, TABLE_DEFINITION.sortKey]);
+  for (const index of TABLE_DEFINITION.globalSecondaryIndexes) {
     keyNames.add(index.partitionKey);
     keyNames.add(index.sortKey);
   }
   return {
     TableName: name,
-    BillingMode: definition.billingMode,
+    BillingMode: TABLE_DEFINITION.billingMode,
     AttributeDefinitions: [...keyNames].map((AttributeName) => ({
       AttributeName,
       AttributeType: 'S',
     })),
     KeySchema: [
-      { AttributeName: definition.partitionKey, KeyType: 'HASH' },
-      { AttributeName: definition.sortKey, KeyType: 'RANGE' },
+      { AttributeName: TABLE_DEFINITION.partitionKey, KeyType: 'HASH' },
+      { AttributeName: TABLE_DEFINITION.sortKey, KeyType: 'RANGE' },
     ],
-    GlobalSecondaryIndexes: definition.globalSecondaryIndexes.map((index) => ({
+    GlobalSecondaryIndexes: TABLE_DEFINITION.globalSecondaryIndexes.map((index) => ({
       IndexName: index.name,
       KeySchema: [
         { AttributeName: index.partitionKey, KeyType: 'HASH' },
@@ -92,7 +101,7 @@ function schemaFingerprint(schema: Schema): string {
 
 function mismatch(name: string, what: string): TableDefinitionMismatchError {
   return new TableDefinitionMismatchError(
-    `Table ${name} does not match infra/lib/table-definition.ts (${what}); recreate the local stack with \`pnpm local:down && pnpm local:up\``,
+    `Table ${name} does not match infra/lib/table-definition.ts (${what}); delete that table (the next run recreates it) or rebuild the local stack with \`pnpm local:down && pnpm local:up\`, which also drops seeded data`,
   );
 }
 
@@ -115,8 +124,9 @@ async function ensureTimeToLive(client: DynamoDBClient, name: string): Promise<v
       }),
     );
   } catch (error) {
-    // DynamoDB refuses to enable TTL twice: accept it when a concurrent call enabled ours.
-    const after = await describe();
+    // DynamoDB refuses to enable TTL twice: accept it when a concurrent call enabled ours. A
+    // failing re-check must not hide why the update failed.
+    const after = await describe().catch(() => undefined);
     if (!isOn(after?.TimeToLiveStatus) || after?.AttributeName !== attribute) throw error;
   }
 }

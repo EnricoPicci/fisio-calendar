@@ -1,4 +1,9 @@
-import { DEFAULT_LOCAL_ENDPOINT, ensureTable, localDynamoClient } from '@fisio/local/table';
+import {
+  ensureTable,
+  localDynamoClient,
+  localEndpoint,
+  TableDefinitionMismatchError,
+} from '@fisio/local/table';
 import { TEST_TABLE } from './dynamo';
 
 /**
@@ -7,13 +12,16 @@ import { TEST_TABLE } from './dynamo';
  * Local is down or holds a table from an older definition: `pnpm test` is the complete suite.
  */
 export default async function setup(): Promise<void> {
-  const endpoint = process.env.DYNAMODB_ENDPOINT || DEFAULT_LOCAL_ENDPOINT;
+  const endpoint = localEndpoint();
   const client = localDynamoClient(endpoint);
   try {
     await ensureTable(client, TEST_TABLE);
   } catch (error) {
-    const cause = (error as { code?: string }).code ?? String(error);
-    const message = `Could not prepare the test table ${TEST_TABLE} on ${endpoint} (${cause}). Is the local stack running? Start it with \`pnpm local:up\`.`;
+    // A drifted table names its own remedy; anything else most likely means the stack is down.
+    const message =
+      error instanceof TableDefinitionMismatchError
+        ? error.message
+        : `Could not prepare the test table ${TEST_TABLE} on ${endpoint} (${(error as { code?: string }).code ?? String(error)}). Is the local stack running? Start it with \`pnpm local:up\`.`;
     // A plain-string stack: Vitest 5 crashes while source-mapping a global-setup stack trace
     // (`code.charCodeAt is not a function`) and would hide this message.
     throw Object.defineProperty(new Error(message), 'stack', { value: `Error: ${message}` });

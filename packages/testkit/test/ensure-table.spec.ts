@@ -9,6 +9,7 @@ import {
   type DynamoDBClient,
   ResourceInUseException,
   ResourceNotFoundException,
+  UpdateTimeToLiveCommand,
   waitUntilTableExists,
 } from '@aws-sdk/client-dynamodb';
 import { TABLE_DEFINITION, tableName } from '@fisio/infra/table-definition';
@@ -82,19 +83,13 @@ describe('Local DynamoDB: ensureTable creates the table once, from the shared de
     const inUse: unknown[] = [];
     const racing = {
       send: async (command: Parameters<DynamoDBClient['send']>[0]) => {
-        if (command instanceof CreateTableCommand) {
-          await allMissed;
-          try {
-            return await client.send(command);
-          } catch (error) {
-            inUse.push(error);
-            throw error;
-          }
-        }
+        const isCreate = command instanceof CreateTableCommand;
+        if (isCreate) await allMissed;
         try {
           return await client.send(command);
         } catch (error) {
-          if (error instanceof ResourceNotFoundException && ++missed === 3) releaseCreates();
+          if (isCreate) inUse.push(error);
+          else if (error instanceof ResourceNotFoundException && ++missed === 3) releaseCreates();
           throw error;
         }
       },
@@ -103,6 +98,11 @@ describe('Local DynamoDB: ensureTable creates the table once, from the shared de
     expect(results.filter(Boolean)).toHaveLength(1);
     expect(inUse).toHaveLength(2);
     for (const error of inUse) expect(error).toBeInstanceOf(ResourceInUseException);
+    // The three calls also race to enable TTL; the losers must accept the winner's TTL.
+    expect(await ttlStatus(name)).toMatchObject({
+      AttributeName: TABLE_DEFINITION.timeToLiveAttribute,
+      TimeToLiveStatus: 'ENABLED',
+    });
   });
 
   // Value: protects=a table left without TTL (the creating call died before enabling it) is repaired by the next call; fails_when=ensureTable enables TTL only on the call that created the table; why_new=every other spec sees a table some call created in full; seam=none; no_claim=TTL expiry itself
@@ -129,6 +129,20 @@ describe('Local DynamoDB: ensureTable creates the table once, from the shared de
           { AttributeName: TABLE_DEFINITION.partitionKey, AttributeType: 'S' },
           { AttributeName: TABLE_DEFINITION.sortKey, AttributeType: 'S' },
         ],
+      }),
+    );
+    await expect(ensureTable(client, name)).rejects.toBeInstanceOf(TableDefinitionMismatchError);
+  });
+
+  // Value: protects=a table whose TTL is on another attribute (items would expire on the wrong field) is refused, not silently reused; fails_when=the TTL attribute check is dropped or loosened; why_new=every other spec's table has TTL on ttl or off; seam=none; no_claim=TTL expiry itself
+  it('refuses an existing table whose TTL is on another attribute', async () => {
+    const name = freshTable();
+    await client.send(new CreateTableCommand(createTableInput(name)));
+    await waitUntilTableExists({ client, minDelay: 1, maxWaitTime: 30 }, { TableName: name });
+    await client.send(
+      new UpdateTimeToLiveCommand({
+        TableName: name,
+        TimeToLiveSpecification: { AttributeName: 'expiresAt', Enabled: true },
       }),
     );
     await expect(ensureTable(client, name)).rejects.toBeInstanceOf(TableDefinitionMismatchError);
@@ -166,9 +180,16 @@ describe('Local DynamoDB: the Vitest global setup', () => {
     else process.env.DYNAMODB_ENDPOINT = saved;
   });
 
-  // Value: protects=`pnpm test` fails, never skips, when DynamoDB Local is down; fails_when=the catch swallows the error and the run goes green without a table; why_new=every run has DynamoDB up; seam=none; no_claim=message wording or stack
+  // Value: protects=`pnpm test` fails, never skips, when DynamoDB Local is down, with a plain Error whose stack is a single string (the Vitest 5 workaround); fails_when=the catch swallows the error or rethrows the raw SDK error; why_new=every run has DynamoDB up; seam=none; no_claim=message wording
   it('rejects when DynamoDB Local is unreachable', async () => {
     process.env.DYNAMODB_ENDPOINT = 'http://127.0.0.1:9';
-    await expect(globalSetup()).rejects.toBeInstanceOf(Error);
+    const error = await globalSetup().then(
+      () => undefined,
+      (rejection: unknown) => rejection,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).constructor).toBe(Error);
+    expect((error as Error).stack?.startsWith('Error: ')).toBe(true);
+    expect((error as Error).stack).not.toContain('\n    at ');
   });
 });

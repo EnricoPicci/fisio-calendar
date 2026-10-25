@@ -110,6 +110,18 @@
       "packages/testkit/test/tenant-isolation-a.spec.ts",
       "packages/testkit/test/tenant-isolation-b.spec.ts"
     ],
+    "packages/testkit/src/index.ts": [
+      "packages/testkit/test/dynamo.spec.ts",
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts"
+    ],
+    "packages/testkit/vitest.config.ts": [
+      "packages/testkit/test/ensure-table.spec.ts",
+      "packages/testkit/test/dynamo.spec.ts",
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts",
+      "tools/scripts/test/vitest-projects.spec.ts"
+    ],
     "packages/testkit/test/tenant-isolation.ts": [
       "packages/testkit/test/tenant-isolation-a.spec.ts",
       "packages/testkit/test/tenant-isolation-b.spec.ts"

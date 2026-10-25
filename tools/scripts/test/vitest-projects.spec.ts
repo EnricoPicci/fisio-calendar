@@ -64,7 +64,10 @@ describe('Vitest projects: every spec file runs in `pnpm test`', () => {
     // This file names the helpers in the pattern below, so it does not count as a user.
     const thisFile = fileURLToPath(import.meta.url);
     const usesDynamo = /\b(testDocumentClient|localDynamoClient|ensureTable|TEST_TABLE)\b/;
-    const testkitSetup = ['src/global-setup.ts', '@fisio/testkit/global-setup'];
+    // The package export, or a relative path that resolves to the testkit file itself.
+    const testkitSetup = join(root, 'packages/testkit/src/global-setup.ts');
+    const isTestkitSetup = (entry: string, dir: string) =>
+      entry === '@fisio/testkit/global-setup' || join(dir, entry) === testkitSetup;
     const missing: string[] = [];
     let checked = 0;
     for (const config of configs) {
@@ -78,7 +81,7 @@ describe('Vitest projects: every spec file runs in `pnpm test`', () => {
       if (!sources.some((path) => usesDynamo.test(readFileSync(path, 'utf8')))) continue;
       checked += 1;
       const setup = [project.test?.globalSetup ?? []].flat();
-      if (!setup.some((entry) => testkitSetup.includes(entry))) missing.push(config);
+      if (!setup.some((entry) => isTestkitSetup(entry, dir))) missing.push(config);
     }
     expect(checked).toBeGreaterThan(0);
     expect(missing).toEqual([]);
