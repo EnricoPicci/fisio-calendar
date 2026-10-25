@@ -30,6 +30,7 @@ Requires Node 24 (`.nvmrc`), pnpm via `corepack enable`, and Docker.
 pnpm install
 pnpm local:up    # Docker: DynamoDB Local (:8000) and Mailpit (UI :8025), then the local table (Node >= 22.18)
 pnpm test        # the complete local suite: the only definition of green (needs local:up)
+pnpm dev         # the API on http://127.0.0.1:3000/api/v1 (watch mode)
 pnpm typecheck
 pnpm lint
 ```

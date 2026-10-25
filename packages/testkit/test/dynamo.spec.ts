@@ -2,12 +2,12 @@ import { DescribeTableCommand, DescribeTimeToLiveCommand } from '@aws-sdk/client
 import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { TABLE_DEFINITION } from '@fisio/infra/table-definition';
 import { afterAll, describe, expect, it } from 'vitest';
-import { freshTenant, TEST_TABLE, testDocumentClient } from '../src/index';
+import { closeTestDocumentClient, freshTenant, TEST_TABLE, testDocumentClient } from '../src/index';
 
 // Test-fixture keys only: product keys are built in apps/api/src/repo (CLAUDE.md, convention 3).
 const tid = freshTenant();
 const db = testDocumentClient();
-afterAll(() => db.destroy());
+afterAll(closeTestDocumentClient);
 
 describe('Local DynamoDB: the shared table on DynamoDB Local', () => {
   it('write/read item round-trip', async () => {

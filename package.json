@@ -15,9 +15,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --parallel --aggregate-output typecheck",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
+    "openapi": "tsx apps/api/src/openapi.ts",
     "local:up": "docker compose -f tools/local/docker-compose.yml up -d --wait && node tools/local/src/create-table.ts local",
     "local:down": "docker compose -f tools/local/docker-compose.yml down",
-    "dev": "node tools/scripts/not-yet.mjs dev WP0.4",
+    "dev": "tsx watch apps/api/src/runtime/local.ts",
     "tick": "node tools/scripts/not-yet.mjs tick WP0.6",
     "seed": "node tools/scripts/not-yet.mjs seed WP0.5",
     "bootstrap:therapist": "node tools/scripts/not-yet.mjs bootstrap:therapist WP0.5",
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.2",
     "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
     "typescript": "~7.0.2",
     "vitest": "^5.0.5"
   }

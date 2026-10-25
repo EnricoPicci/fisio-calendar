@@ -74,6 +74,8 @@
     "apps/*/tsconfig.node.json": [],
     "apps/*/vitest.config.ts": [],
     "apps/*/src/index.ts": [],
+    "apps/api/src/handlers/api.ts": [],
+    "docs/openapi.json": ["apps/api/test/openapi.spec.ts"],
     "packages/*/package.json": [],
     "packages/*/tsconfig.json": [],
     "packages/*/vitest.config.ts": [],

@@ -1,0 +1,299 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Fisio Calendar API",
+    "version": "1",
+    "description": "Generated from the route declarations in apps/api (`pnpm openapi`). Errors are RFC 9457 problem+json with `type` `urn:fisio:error:<code>`."
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "A Cognito access token of the SPA app client"
+      }
+    },
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "Problem": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "pattern": "^urn:fisio:error:(validation_failed|unauthenticated|forbidden|not_found|slot_full|slot_cancelled|slot_past|slot_outside_horizon|slot_changed|already_booked|overlapping_booking|cutoff_passed|rule_overlap|client_exists|client_blocked|conflict_retry_exhausted|internal_error)$"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "validation_failed",
+              "unauthenticated",
+              "forbidden",
+              "not_found",
+              "slot_full",
+              "slot_cancelled",
+              "slot_past",
+              "slot_outside_horizon",
+              "slot_changed",
+              "already_booked",
+              "overlapping_booking",
+              "cutoff_passed",
+              "rule_overlap",
+              "client_exists",
+              "client_blocked",
+              "conflict_retry_exhausted",
+              "internal_error"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "code",
+          "title",
+          "status"
+        ]
+      },
+      "ValidationIssue": {
+        "type": "object",
+        "properties": {
+          "in": {
+            "type": "string",
+            "enum": [
+              "body",
+              "query",
+              "path",
+              "header"
+            ]
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "in",
+          "path",
+          "code"
+        ]
+      },
+      "Me": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ClientProfile"
+          },
+          {
+            "$ref": "#/components/schemas/TherapistProfile"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "role",
+          "mapping": {
+            "client": "#/components/schemas/ClientProfile",
+            "therapist": "#/components/schemas/TherapistProfile"
+          }
+        }
+      },
+      "ClientProfile": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "client"
+            ]
+          },
+          "clientId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "cliente@example.com"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^\\+[1-9]\\d{6,14}$"
+          },
+          "locale": {
+            "type": "string",
+            "enum": [
+              "it"
+            ]
+          }
+        },
+        "required": [
+          "role",
+          "clientId",
+          "name",
+          "email",
+          "locale"
+        ]
+      },
+      "TherapistProfile": {
+        "type": "object",
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "therapist"
+            ]
+          },
+          "therapistId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "role",
+          "therapistId"
+        ]
+      }
+    },
+    "parameters": {}
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness",
+        "x-access": "public",
+        "responses": {
+          "200": {
+            "description": "The API is up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`internal_error`: Unexpected server error; the response discloses nothing about it",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "summary": "The caller's profile and role",
+        "x-access": "member",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`: Missing or invalid token",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer` when no token was sent; `Bearer error=\"invalid_token\"` when one was sent and refused (RFC 6750 §3)",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "Bearer",
+                    "Bearer error=\"invalid_token\""
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: Wrong role, not the owner, or client status is not enabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`internal_error`: Unexpected server error; the response discloses nothing about it",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {}
+}

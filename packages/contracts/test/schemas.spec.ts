@@ -3,14 +3,17 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   BookingIdSchema,
   ClientIdSchema,
+  ClientStatusSchema,
   EmailSchema,
   IsoDateSchema,
   IsoDateTimeSchema,
   LocalTimeSchema,
   PhoneE164Schema,
+  RoleSchema,
   RuleIdSchema,
   SlotIdSchema,
   SlotTypeSchema,
+  TenantIdSchema,
 } from '../src/schemas';
 
 const ok = (schema: { safeParse(v: unknown): { success: boolean } }, value: unknown) =>
@@ -116,5 +119,26 @@ describe('Zod base schemas', () => {
     // A start inside the spring-forward gap does not exist in Rome.
     expect(ok(SlotIdSchema, '2027-03-28T02:30#pool')).toBe(false);
     expect(ok(SlotIdSchema, 7)).toBe(false);
+  });
+
+  // Value: protects=a malformed slot id is a validation issue, never a throw that escapes safeParse as a 500; fails_when=the refine calls a domain function that throws on malformed input; why_new=TODOS.md (map domain time errors); seam=none; no_claim=runtimes without tz data (refused at API startup)
+  it('SlotId refuses malformed input as an issue, without throwing', () => {
+    for (const input of ['', 'tomorrow#pool', '2027-03-28T09:00', '2027-03-28T9:00#pool']) {
+      expect(() => SlotIdSchema.safeParse(input)).not.toThrow();
+      expect(ok(SlotIdSchema, input)).toBe(false);
+    }
+  });
+
+  // Value: protects=a tenant id can never put `#` or spaces into a DynamoDB key; fails_when=the pattern is widened; why_new=tenant ids now come from token claims; seam=none; no_claim=how tenants are issued (WP0.5)
+  it('TenantId is letters, digits and dashes, 1 to 64 characters', () => {
+    expect(ok(TenantIdSchema, 'test-1f0c')).toBe(true);
+    for (const input of ['', 'a#b', 'a b', 'x'.repeat(65), 'T#1']) {
+      expect(ok(TenantIdSchema, input)).toBe(false);
+    }
+  });
+
+  it('ClientStatus is invited, enabled or blocked; Role is client or therapist', () => {
+    expect(ClientStatusSchema.options).toEqual(['invited', 'enabled', 'blocked']);
+    expect(RoleSchema.options).toEqual(['client', 'therapist']);
   });
 });

@@ -16,7 +16,9 @@ import { TABLE_DEFINITION } from '@fisio/infra/table-definition';
  * DynamoDB Local helpers shared by `pnpm local:up` (create-table) and the testkit. The table
  * comes from the shared definition in infra/lib/table-definition.ts (docs/architecture.md §11.4).
  */
-export const DEFAULT_LOCAL_ENDPOINT = 'http://localhost:8000';
+// 127.0.0.1, matching the compose bind: `localhost` may resolve to ::1 first, where another
+// server on port 8000 would answer instead of DynamoDB Local.
+export const DEFAULT_LOCAL_ENDPOINT = 'http://127.0.0.1:8000';
 
 /** An existing table whose keys, indexes or TTL attribute differ from the shared definition. */
 export class TableDefinitionMismatchError extends Error {
@@ -24,7 +26,7 @@ export class TableDefinitionMismatchError extends Error {
 }
 
 /**
- * The DynamoDB Local endpoint: `DYNAMODB_ENDPOINT`, else http://localhost:8000. A blank value
+ * The DynamoDB Local endpoint: `DYNAMODB_ENDPOINT`, else http://127.0.0.1:8000. A blank value
  * counts as unset: an empty endpoint would make the SDK resolve the real regional endpoint.
  */
 export function localEndpoint(): string {

@@ -19,6 +19,13 @@ export const MAX_YEAR = 9999;
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const LOCAL_TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+/**
+ * The shapes of a local date and time, for the OpenAPI `pattern`. `ISO_DATE_SHAPE` cannot say
+ * "a real date in a supported year"; `isIsoDate` and `isLocalTime` remain the full checks.
+ */
+export const ISO_DATE_SHAPE: RegExp = ISO_DATE;
+export const LOCAL_TIME_SHAPE: RegExp = LOCAL_TIME;
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
 
@@ -45,6 +52,18 @@ export class InvalidTimeZoneError extends RangeError {
   }
 }
 
+/**
+ * A local date or time that is not well formed (`2027-02-30`, `9:00`). Named so the API maps it
+ * to `validation_failed` when request input reaches a helper, while a plain `RangeError` from a
+ * programming mistake stays a 500.
+ */
+export class InvalidLocalValueError extends RangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidLocalValueError';
+  }
+}
+
 /** True for a real calendar date written as `yyyy-mm-dd`, in {@link MIN_YEAR}–{@link MAX_YEAR}. */
 export function isIsoDate(value: string): boolean {
   return dateParts(value) !== undefined;
@@ -67,7 +86,7 @@ export function localDateTimeToUtc(
 ): Date {
   const [y, m, d] = requireDate(date);
   const match = LOCAL_TIME.exec(time);
-  if (!match) throw new RangeError(`Invalid local time "${time}", expected HH:mm`);
+  if (!match) throw new InvalidLocalValueError(`Invalid local time "${time}", expected HH:mm`);
   requireTimeZone(timeZone);
   // The wall-clock reading as if it were UTC. The real instant is `wall - offset` for one of
   // the zone's offsets around that day (one before a DST change, one after; they are equal on
@@ -137,7 +156,8 @@ function dateParts(value: string): [number, number, number] | undefined {
 
 function requireDate(value: string): [number, number, number] {
   const parts = dateParts(value);
-  if (!parts) throw new RangeError(`Invalid date "${value}", expected a real yyyy-mm-dd`);
+  if (!parts)
+    throw new InvalidLocalValueError(`Invalid date "${value}", expected a real yyyy-mm-dd`);
   return parts;
 }
 

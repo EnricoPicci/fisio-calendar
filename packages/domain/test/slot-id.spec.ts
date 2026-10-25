@@ -101,6 +101,20 @@ describe('SlotId: identity of a slot (<date>T<HH:mm>#<type>)', () => {
     expect((error as InvalidSlotIdError).input).toBe('nope');
   });
 
+  // Value: protects=a slot id survives a URL path: `#` and `:` are encoded and decode back; fails_when=toPathSegment stops encoding `#` (the request loses `#pool`) or encodes lossily; why_new=TODOS.md (slot ids in URL paths); seam=none; no_claim=Hono's param decoding (apps/api/test/slot-id-path.spec.ts)
+  it('toPathSegment encodes the id for a URL path, losslessly', () => {
+    const id = SlotId.of('2027-03-28T09:00#pool');
+    expect(SlotId.toPathSegment(id)).toBe('2027-03-28T09%3A00%23pool');
+    expect(decodeURIComponent(SlotId.toPathSegment(id))).toBe(id);
+  });
+
+  // Value: protects=a schema refinement calling startExists never throws on malformed input (a throw inside a refine escapes safeParse as a 500); fails_when=startExists parses before checking the format; why_new=TODOS.md (SlotIdSchema must fail validation, not throw); seam=none; no_claim=runtimes without tz data
+  it('startExists answers false for a string that is not a slot id', () => {
+    for (const input of ['', 'tomorrow#pool', '2027-02-30T09:00#pool', '2027-03-28T09:00#gym']) {
+      expect(SlotId.startExists(input)).toBe(false);
+    }
+  });
+
   it('ids of the same type sort chronologically as plain strings', () => {
     const ids = [
       '2027-03-28T18:00#pool',

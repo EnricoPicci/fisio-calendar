@@ -49,45 +49,41 @@
 
 ## API
 
-### Slot ids in URL paths
+### Slot ids through CloudFront and the SPA client
 
-**What:** Give `SlotId` a URL-safe path form (for example `SlotId.toPathSegment` / `fromPathSegment` with `encodeURIComponent`) and require the SPA API client and the route param schemas to use it; add a spec that round-trips `/admin/slots/{slotId}/cancel` through the in-process fetch adapter.
+**What:** Add a `dev` smoke step that sends `POST /api/v1/...{slotId}` with `SlotId.toPathSegment(id)` (`%3A`, `%23`) through CloudFront and checks the route receives the same id; make the SPA `ApiClient` build every slot path with `SlotId.toPathSegment`.
 
-**Why:** A slot id contains `#` and `:`. Unencoded in `POST /admin/slots/{slotId}/cancel`, the `#` starts a URL fragment, so the request silently hits `/admin/slots/2027-03-28T09:00` and returns 404 or the wrong route.
+**Why:** WP0.4 proved the encoding round-trips in-process (`apps/api/test/slot-id-path.spec.ts`); CloudFront normalisation or the Function URL's SigV4 canonical path could still re-encode or decode `%23`, which only the cloud shows.
 
-**Context:** Red-team finding in the WP0.2 `/ship` review. Decide in WP0.4 (route params) at the latest, before WP1.4 adds the slot cancel and reopen routes. Check that `%23` survives CloudFront and the Function URL.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** WP0.4.
-
-### OpenAPI patterns for refine-only schemas
-
-**What:** Give `SlotIdSchema`, `IsoDateSchema` and `LocalTimeSchema` in `packages/contracts/src/schemas.ts` a `.regex()` and an example next to their `refine`, use a brand instead of `transform` for `SlotIdSchema` if response schemas need it, and assert in the OpenAPI generation spec that these fields carry a pattern. Word the `conflict_retry_exhausted` meaning so it cannot drift from the API's retry constant ("after 3 attempts" today).
-
-**Why:** `@hono/zod-openapi` cannot describe a `refine` or a `transform`, so `docs/openapi.json` would show plain strings and the typed SPA client would lose the formats.
-
-**Context:** Red-team and maintainability findings in the WP0.2 `/ship` review; the schemas validate correctly today, only the generated contract is affected.
+**Context:** Rest of the WP0.2 red-team finding "Slot ids in URL paths", whose domain and route half landed in WP0.4.
 
 **Effort:** S
 **Priority:** P2
-**Depends on:** WP0.4 (OpenAPI generation).
+**Depends on:** WP0.7 (ApiClient), WP0.10 (dev smoke).
 
-### Map domain time errors to `validation_failed`
+### Domain time errors with their request path
 
-**What:** In the API error mapper, turn `NonexistentLocalTimeError`, `InvalidTimeZoneError` and the `RangeError`s of the time helpers into `validation_failed` (400) with the offending path, and cover it with an endpoint spec (a rule that starts at 02:30 on 2027-03-28).
+**What:** When the rules and range endpoints arrive, have their use cases raise `ApiError('validation_failed', { errors })` with the offending field when a domain time helper refuses an input, and cover it with an endpoint spec (a rule that starts at 02:30 on 2027-03-28). If a time zone ever comes from a request or the database, decide whether `InvalidTimeZoneError` becomes `validation_failed`. When a repository first parses a stored slot id or local date/time, wrap its domain errors (e.g. in a `CorruptItemError`) so the by-name fallback in `apps/api/src/http/problem.ts` cannot turn a corrupt database item into an unlogged 400 instead of a logged 500; cover it with a spec that stores a bad slot id.
 
-**Why:** `SlotIdSchema` now refuses a slot id inside the DST gap, but other inputs (rule start times, date ranges) reach `localDateTimeToUtc` as separate date and time fields. Unmapped, the throw becomes a 500.
+**Why:** WP0.4's error mapper turns `NonexistentLocalTimeError`, `InvalidLocalValueError` and `InvalidSlotIdError` into `validation_failed` by name, but it cannot know the path, so the SPA cannot highlight the field. `InvalidTimeZoneError` maps to `internal_error` today, because no request carries a zone and the error means the runtime lacks tz data (the API also refuses to start then).
 
-Make `SlotIdSchema` fail validation rather than throw: `SlotId.startExists` rethrows anything that is not `NonexistentLocalTimeError` (an `InvalidTimeZoneError` on a runtime without full ICU time-zone data), and a throw inside a Zod `refine` escapes `safeParse` as a 500. Either catch in the refine or check at startup that Europe/Rome resolves. Make `startExists` return `false` for a malformed id instead of throwing, or keep it off the public `SlotId` object.
-
-Recognise the domain errors by name or a shared brand as well as `instanceof`: two copies of `@fisio/domain` in one bundle make `instanceof` fail and turn a 400 into a 500. `classifyError` already does this for `PermanentError`; use one helper for every exported error.
-
-**Context:** WP0.2 follow-up 26. The slot-id half is fixed in `SlotIdSchema` and `SlotId.format`; the mapper does not exist before WP0.4.
+**Context:** Rest of WP0.2 follow-up 26 ("Map domain time errors to `validation_failed`").
 
 **Effort:** S
-**Priority:** P2
-**Depends on:** WP0.4.
+**Priority:** P3
+**Depends on:** WP1.1 (rules endpoints).
+
+### OpenAPI components without a route
+
+**What:** If the SPA needs a schema in `docs/openapi.json` before a route uses it, register it without `OpenAPIRegistry.register()`, or make `@hono/zod-openapi` and our packages load the same Zod build.
+
+**Why:** `register()` calls the `.openapi()` method that `zod-to-openapi` adds to Zod's prototype; it patched the CommonJS copy of Zod while `@fisio/contracts` uses the ESM copy, so `register()` threw. Schemas named with `.meta({ id })` and used by a route are fine, and that is all WP0.4 needs.
+
+**Context:** Found in WP0.4 while generating the document (Zod's dual-package hazard).
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** WP0.7 (generated SPA types), only if needed.
 
 ### Bounds for date ranges and the booking horizon
 
@@ -120,6 +116,18 @@ Recognise the domain errors by name or a shared brand as well as `instanceof`: t
 
 ## Auth
 
+### Bearer tokens through CloudFront OAC to the Function URL
+
+**What:** Decide how the SPA's access token reaches the `api` Lambda behind CloudFront, then make `authorize` (`apps/api/src/http/access.ts`), the SPA `ApiClient` and the CDK `App` stack agree. Options: (a) a custom header such as `x-fisio-authorization: Bearer …`, forwarded by the origin request policy, with the API reading it in the cloud; (b) a Lambda Web Function origin with OAC signing behaviour `always-amz-auth`, which keeps the viewer's `Authorization`; (c) another design. Add a `dev` smoke step that calls `GET /api/v1/me` through CloudFront with a real token.
+
+**Why:** OAC signing behaviour `always` overwrites the viewer's `Authorization` header with CloudFront's SigV4 signature. `no-override` passes it unsigned, so the `AWS_IAM` Function URL refuses it, and `always-amz-auth` is valid only for Lambda Web Function origins (AWS docs: "Restrict access to an AWS Lambda function URL origin", `OriginAccessControlConfig.signingBehavior`). As designed (§8.2 bearer in `Authorization`, §9.1 OAC + IAM Function URL), every member and therapist route would answer 401 in `dev`/`prod`, while every local spec passes. It fails closed.
+
+**Context:** Red-team finding in the WP0.4 `/ship` review, verified against the AWS docs. The decision touches `infra/` and the SPA, so it was deferred (CLAUDE.md: ask before changing `infra/`; never widen a WP). Architecture §9.1 carries an open-decision note.
+
+**Effort:** S (code) once decided
+**Priority:** P1
+**Depends on:** Must be settled before WP0.9 (CDK `App` stack) and WP0.7 (SPA `ApiClient`).
+
 ### Email case and id format across Cognito and the auth emulator
 
 **What:** Make sure every path that stores or compares an email uses `EmailSchema` (trimmed, lower-cased): sign-up, the therapist's client invite, Cognito `username`/`email` attributes, and the emulator. Check that the emulator issues `sub` values that `ClientIdSchema` (`z.uuid()`) accepts, the same version Cognito uses.
@@ -131,6 +139,82 @@ Recognise the domain errors by name or a shared brand as well as `instanceof`: t
 **Effort:** S
 **Priority:** P2
 **Depends on:** The Cognito and auth-emulator work packages.
+
+### Pin the therapist token to the stored therapist id
+
+**What:** Store the therapist's Cognito `sub` in the tenant's Settings item when the bootstrap CLI creates it, and make `authorize` (`apps/api/src/http/access.ts`) refuse a `role: therapist` token whose `sub` differs. The item is already read on every therapist request, so only the projection changes. Add a spec: a therapist-role token with another `sub` → 403 on every protected route.
+
+**Why:** Today any validly signed access token with `role: therapist` and the tenant id gets full `/admin/*` access, whatever its `sub`. All admin privilege rests on the pre-token-generation trigger and the Cognito attribute and group setup; one wrong write permission would let a client become the therapist with no check left in the API.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review. The bootstrap CLI (`pnpm bootstrap:therapist`) and the Settings item's fields land in WP0.5 and WP1.1.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.5 (bootstrap writes the Settings item).
+
+### Validate the issuer URL at cold start
+
+**What:** In `loadConfig` (`apps/api/src/config.ts`), refuse an `AUTH_ISSUER` with a trailing slash and any scheme but `https:` (allowing loopback `http:` for `local` and `test`), with `config.spec.ts` cases.
+
+**Why:** `z.url()` accepts `https://x/p/`, `http:` and `ftp:`. The derived JWKS URI drops a trailing slash but the issuer passed to the verifier keeps it, so the `iss` check fails on every token: a `JwtBaseError` outside `SERVER_FAULTS`, so every user gets an unlogged 401 — the failure the 500 rule exists to prevent.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review. The CDK `App` stack sets the variable in WP0.9.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9.
+
+### JWKS back-off answers 401 for a new signing key
+
+**What:** Decide how a token whose `kid` is not cached is answered while `aws-jwt-verify`'s `SimplePenaltyBox` is in its 10 s back-off (`WaitPeriodNotYetEndedJwkError`, today a 401). Either add it to `SERVER_FAULTS` in `apps/api/src/identity/token-verifier.ts` (500, so clients retry; cost: unknown-kid noise then logs as server faults and counts toward the 5xx alarm), or pass a penalty box keyed by `kid` as well as the JWKS URI. Pin the choice with a spec (unknown kid, then a valid token with a new kid inside 10 s).
+
+**Why:** The penalty box is keyed by the JWKS URI only. An unauthenticated caller sending tokens with random `kid`s every 10 s keeps it closed, so after a Cognito key rotation (or an emulator restart with new keys) real users get 401 until the attacker stops. Cached kids are unaffected.
+
+**Context:** Red-team finding in the WP0.4 `/ship` review, verified in `aws-jwt-verify@5.2.1` `dist/esm/jwk.js` (`SimplePenaltyBox.wait(jwksUri)`).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.5 (emulator key rotation) or WP0.9.
+
+### Warm the JWKS cache at cold start
+
+**What:** In the Lambda composition root, start `verifier.hydrate()` at init without awaiting it at the top level, and catch its rejection so a JWKS outage still surfaces per request as a 500.
+
+**Why:** The JWKS is fetched lazily on the first authenticated request after each cold start, adding a round trip to `cognito-idp` to a user request. With reserved concurrency 10 and low traffic, cold starts are a large share of requests.
+
+**Context:** Performance finding in the WP0.4 `/ship` review. Measure the cold-start latency on `dev` before and after.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9 (Lambda deployed and measurable).
+
+### Comment and doc follow-ups from the WP0.4 final review
+
+**What:**
+- `InvalidTokenError`'s docstring (`apps/api/src/identity/token-verifier.ts`) still says "for logs only"; its presence as the `ApiError` cause now picks the `Bearer error="invalid_token"` challenge.
+- `bearerChallenge` (`apps/api/src/http/problem.ts`) recognises that cause by class name; set the challenge explicitly where `authorize` builds the error (or use `instanceof`), and drop "Recognised by name, like the domain errors".
+- The two challenge strings are written in `problem.ts` and again in `BEARER_CHALLENGE` (`apps/api/src/http/responses.ts`); define them once and build the OpenAPI enum from it.
+- Architecture §8.2 and the inline comment in `token-verifier.ts` still say only an unfetchable or unparsable JWKS is a 500; add a key that cannot verify signatures (`use`, `kty`).
+
+**Why:** Each comment now disagrees with the code, or invites the two copies to drift; the specs pin the behaviour, so nothing is broken today.
+
+**Context:** Maintainability findings from the final `/ship` review pass of WP0.4, deferred by the owner so the review could converge. WP0.5 edits `apps/api/src/identity/` anyway.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.5.
+
+### Case-insensitive bearer scheme
+
+**What:** Match the `Bearer` scheme case-insensitively in `authorize` (`apps/api/src/http/access.ts`, `BEARER`), with a spec for `bearer <token>`.
+
+**Why:** RFC 9110 §11.1 makes the auth scheme case-insensitive; a client sending `bearer` gets a 401 today. Our own SPA sends `Bearer`, so this is conformance, not a live bug.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
 
 ## Web app
 
@@ -180,7 +264,7 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 
 **Why:** The packages export raw `.ts` with extensionless relative imports (`./time`), and they use TypeScript constructor parameter properties (`readonly date` in `NonexistentLocalTimeError`, `InvalidTimeZoneError`, `InvalidSlotIdError`). Node's type stripping rejects both: extensionless specifiers do not resolve, and parameter properties fail with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, so a loader that only adds extensions is not enough (consider `erasableSyntaxOnly`).
 
-**Context:** WP0.2 follow-up 15 (adversarial review). Bundled Lambdas are unaffected; scripts run directly are not.
+**Context:** WP0.2 follow-up 15 (adversarial review). Bundled Lambdas are unaffected; scripts run directly are not. WP0.4 runs its two scripts through `tsx` (`pnpm dev`, `pnpm openapi`), a root dev dependency; the WP0.9 bundle smoke and the first `tools/*` script still need the decision.
 
 **Effort:** S
 **Priority:** P2
@@ -198,6 +282,30 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Priority:** P2
 **Depends on:** None technical; a decision on timing.
 
+### API responses are never cached
+
+**What:** Add one root middleware in `apps/api/src/http/app.ts` that sets `Cache-Control: no-store` on every API response (problem+json included), and make the CDK `App` stack name the `/api/*` behaviour's cache policy (`CachingDisabled`) in architecture §9.1, with an infra assertion.
+
+**Why:** `GET /me` returns personal data, and neither `infra/` nor the architecture names the `/api/*` cache policy yet; a caching default in front would serve one user's profile to another. The header closes it whatever the distribution's policy turns out to be.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (CDK `App` stack).
+
+### Move the Lambda adapter to `@hono/aws-lambda`
+
+**What:** Replace `hono/aws-lambda` in `apps/api/src/handlers/api.ts` with the `@hono/aws-lambda` package (a new dependency: ask first), and check in the bundle smoke that a request the adapter cannot build still answers problem+json, not plain-text `Invalid request` / `Internal Server Error`.
+
+**Why:** `hono/aws-lambda` is marked deprecated in its own source ("will be removed in v5"). Harmless while `hono` stays on `^4`.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9 (bundle smoke), or the next `hono` major.
+
 ## Local stack and test harness
 
 ### Dependency direction between testkit and tools/local
@@ -211,6 +319,42 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Effort:** S
 **Priority:** P2
 **Depends on:** WP0.5 (before `tools/local` imports `apps/api`).
+
+### Keep every failure in `InProcessAsyncInvoker.settled()`
+
+**What:** Make `settled()` in `packages/domain/src/ports.ts` throw an `AggregateError` when more than one invoked function failed, and track "has failed" separately from the value so a rejection with `undefined` is not dropped. Cover both in `packages/domain/test/ports.spec.ts`.
+
+**Why:** Today it rethrows only the first failure (`const [first] = this.#failures.splice(0)`) although its doc says a failure is never lost; a journey that fires two notifier invocations would hide the second error.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review. Nothing invokes it until the notifier wiring in WP0.6.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.6.
+
+### Local API defaults from their single source
+
+**What:** Derive `LOCAL_DEFAULTS.TABLE_NAME` and `LOCAL_DEFAULTS.DYNAMODB_ENDPOINT` in `apps/api/src/runtime/local.ts` from `tableName('local')` (`infra/lib/table-definition.ts`) and `DEFAULT_LOCAL_ENDPOINT` (`tools/local/src/table.ts`), or add a spec asserting they are equal.
+
+**Why:** The values are copied today. WP0.4 already changed the local endpoint from `localhost` to `127.0.0.1` in `tools/local`; the next such change would leave `pnpm dev` pointing at a table or host `pnpm local:up` never created.
+
+**Context:** Maintainability finding in the WP0.4 `/ship` review. Either fix adds a workspace dependency of `apps/api` on `@fisio/infra` and `@fisio/local` (ask first, CLAUDE.md), and interacts with "Dependency direction between testkit and tools/local" above.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.5.
+
+### Guard the local `/__dev/*` routes against browser requests
+
+**What:** Before the dev hooks do real work, refuse `/__dev/*` requests whose `Host` is not `127.0.0.1:<port>`/`localhost:<port>` or whose `Origin` is set and is not the local web origin (or require `content-type: application/json` on both routes so a cross-origin request needs a preflight). Cover it in `apps/api/test/runtime.spec.ts`.
+
+**Why:** `POST /__dev/deliver` is public and bodyless; binding to 127.0.0.1 stops other machines but not a web page open in the developer's browser (a simple cross-origin POST, or DNS rebinding), which could trigger delivery of due notifications on the local stack.
+
+**Context:** Security finding in the WP0.4 `/ship` review. No impact while the hooks are no-ops; the Lambda root never mounts these routes.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.6 (the hooks start delivering).
 
 ### One local stack per worktree
 
@@ -251,14 +395,12 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 ### Local stack hardening from the WP0.3 final review
 
 **What:** Small fixes to `tools/local` and the testkit setup, each with a spec where one is possible:
-- Default the endpoint to `http://127.0.0.1:8000`, matching the compose bind: `localhost` can resolve to `::1` first, where another server on port 8000 would answer instead of DynamoDB Local.
 - In `ensureTable`, compare `error.name` (`ResourceNotFoundException`, `ResourceInUseException`) instead of `instanceof`: the caller's client may come from another copy of `@aws-sdk/client-dynamodb` if the two packages ever drift apart.
 - Check the Node version at the top of `create-table.ts` (type stripping needs >= 22.18; `engines` stays `>=22.12` for the Lambda runtime) and print a clear message instead of an extension error.
 - Add `BillingModeSummary.BillingMode` and `LocalSecondaryIndexes` to the schema fingerprint, and run the check when a create lost the race (`ResourceInUseException`), so a table another process made from a different definition is refused too.
 - Global setup: keep the original error as `cause`, use `error.name` for SDK service errors, and add the "is the stack running?" hint only for connection errors and timeouts.
 - TTL in `DISABLING` state: refuse with a named remedy instead of the raw AWS error.
 - The mismatch message says "delete that table" with no command for it: add `node tools/local/src/delete-table.ts <stage>` or drop that option (and the same words in architecture §11.4).
-- `testDocumentClient()` never exposes its base client, so specs cannot close it; return it, or cache one client per worker.
 - Items written under fresh tenants accumulate in a long-running container (`-inMemory`, no `ttl` on spec items): set `ttl` on spec items or document `local:down && local:up` as the reset.
 - The DynamoDB healthcheck relies on `curl` being in the image; a digest bump to a slimmer base would fail `--wait` after about 60 s with no hint.
 - `isTestkitSetup` in `tools/scripts/test/vitest-projects.spec.ts` should use `path.resolve` so an absolute `globalSetup` entry is accepted; `DEFAULT_LOCAL_ENDPOINT` no longer needs to be exported.
@@ -272,3 +414,8 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Depends on:** None; natural moment: WP0.4 or WP0.5, when more specs use the testkit.
 
 ## Completed
+
+- **Slot ids in URL paths** (WP0.4): `SlotId.toPathSegment`; route params decode through Hono and `SlotIdSchema`; round-trip spec through the in-process fetch adapter. The CloudFront check and the SPA client remain ("Slot ids through CloudFront and the SPA client").
+- **OpenAPI patterns for refine-only schemas** (WP0.4): `SlotIdSchema`, `IsoDateSchema` and `LocalTimeSchema` carry the domain's shape as `regex` plus an example; the OpenAPI spec asserts the patterns; `conflict_retry_exhausted` no longer names the attempt count.
+- **Map domain time errors to `validation_failed`** (WP0.4): the API error mapper recognises the domain errors by name (`isErrorNamed`, shared with `classifyError`); the time helpers throw `InvalidLocalValueError` for malformed input; `SlotIdSchema`'s refinement never throws, and the API refuses to start without Europe/Rome tz data. The request-path part remains ("Domain time errors with their request path").
+- **Local stack hardening, two items** (WP0.4): the DynamoDB Local endpoint defaults to `127.0.0.1`; `testDocumentClient()` is cached per spec file and closed with `closeTestDocumentClient()`.

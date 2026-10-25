@@ -62,5 +62,6 @@ export const strings: Strings = {
     client_blocked: 'Operazione non consentita: il cliente è bloccato.',
     conflict_retry_exhausted:
       'Il servizio è momentaneamente occupato. Riprova tra qualche istante.',
+    internal_error: 'Si è verificato un errore imprevisto. Riprova tra poco.',
   },
 };
