@@ -41,10 +41,13 @@ dev server), `404 not_found` and `500 internal_error`.
 
 Tokens are `{ accessToken, idToken, refreshToken, expiresIn }`: the answer routes return them bare;
 only `/password`, which may or may not need a TOTP step, wraps them as `{ kind: "signedIn", tokens }`. Until WP0.6 the codes are printed
-on the emulator's console; then they go to Mailpit. The signing key lives in memory, so a restart
-invalidates access tokens (refresh tokens are stored and keep working).
+on the emulator's console; then they go to Mailpit. The signing key lives in memory and a restart
+makes a new one: the API keeps the JWKS it fetched until it meets the new key's `kid`, so access
+tokens signed before the restart keep working until then (restart the API too for a clean cut).
+Refresh tokens are stored and survive a restart.
 
 - **Depends on:** `@fisio/domain`, `@fisio/contracts`, `@fisio/local` (DynamoDB Local client),
-  `@fisio/infra` (table name), `otplib`, Hono. Never on `apps/*`; specs use the testkit.
+  `@fisio/infra` (table name), the AWS SDK DynamoDB clients, `otplib`, Hono, Zod. Never on
+  `apps/*`; specs use the testkit.
 - **`@fisio/auth-emulator/testing`:** `createTestEmulator` (a pool of its own in a given table,
-  clock and channel), `otpCodeIn`, `jwtPayload`, for specs and the seed.
+  clock and channel), `totpCode`, `completeSetup`, `otpCodeIn`, `jwtPayload`, for specs and the seed.

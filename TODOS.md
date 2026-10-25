@@ -228,6 +228,42 @@
 **Priority:** P2
 **Depends on:** WP0.9.
 
+### Repair a Cognito user left without a role group
+
+**What:** Have `CognitoIdentityProvider.findUserByEmail` report a user in no role group as its own state (or a typed error), and let `createUser` / `bootstrap:therapist` add the missing group, which is safe to repeat. At the least, give the "is in no role group" error the same "delete it, then retry" hint as the rollback's AggregateError.
+
+**Why:** `createUser` rolls back only when `AdminAddUserToGroup` throws. If the process dies between the two calls, or the SDK retries an `AdminCreateUser` that Cognito already applied (`UsernameExistsException` on the retry), the user stays without a group. Every later bootstrap run then fails at its first lookup, before it could add the group, until someone deletes the user by hand. This is not the settled race (where the concurrent run's group add lands).
+
+**Context:** Claude adversarial finding in the WP0.5 `/ship` (run 2), after the last review cycle. It matters for the one-time prod bootstrap (WP0.10).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None.
+
+### Close the base DynamoDB clients in the CLIs
+
+**What:** In `tools/bootstrap/src/cli.ts` and `tools/local/seed/src/seed.ts`, keep the `DynamoDBClient` the document client wraps and call `destroy()` on it. `DynamoDBDocumentClient.destroy()` is empty in lib-dynamodb 3.1146.0, so `doc.destroy()` closes nothing (the Cognito client is closed).
+
+**Why:** Idle keep-alive sockets are unref'd, so a one-shot CLI exits today. Anything that builds these adapters repeatedly (a spec, a long-lived process) would leak them.
+
+**Context:** Claude adversarial finding in the WP0.5 `/ship` (run 2).
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### Main-module check through a symlinked path
+
+**What:** Compare `realpathSync(process.argv[1])` with `fileURLToPath(import.meta.url)` in the "run as a script" checks of `tools/bootstrap/src/cli.ts`, `tools/local/seed/src/seed.ts`, `tools/local/auth-emulator/src/server.ts` and `apps/api/src/runtime/local.ts`.
+
+**Why:** `import.meta.url` is the real path, `argv[1]` may not be. Run from a checkout reached through a symlink, `pnpm bootstrap:therapist` and `pnpm seed` exit 0 having done nothing.
+
+**Context:** Claude adversarial finding in the WP0.5 `/ship` (run 2); the pattern predates WP0.5 in `local.ts`.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
 ### Sign-in lockout as a denial of service
 
 **What:** Decide how the lockout is keyed. Today five wrong codes or passwords for one email lock that email for 15 minutes, and the code and password flows share the counter. Anyone who knows an address can keep a client, or the therapist, locked out by repeating that every 15 minutes. While locked, a client asking for a code gets the normal answer and no email. Options: count per session or user, keep code failures out of the password flow, add a per-IP WAF rate rule on the sign-in endpoints, and design the SPA's "locked" message with a C1 journey.
