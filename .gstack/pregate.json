@@ -81,6 +81,52 @@
     "tools/local/package.json": [],
     "tools/local/tsconfig.json": [],
     "tools/local/src/index.ts": [],
+    "tools/local/src/table.ts": [
+      "packages/testkit/test/ensure-table.spec.ts",
+      "packages/testkit/test/dynamo.spec.ts",
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts"
+    ],
+    "tools/local/src/create-table.ts": ["packages/testkit/test/ensure-table.spec.ts"],
+    "tools/local/docker-compose.yml": [
+      "packages/testkit/test/ensure-table.spec.ts",
+      "packages/testkit/test/dynamo.spec.ts",
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts"
+    ],
+    "infra/lib/table-definition.ts": [
+      "infra/test/table-definition.spec.ts",
+      "packages/testkit/test/ensure-table.spec.ts",
+      "packages/testkit/test/dynamo.spec.ts"
+    ],
+    "packages/testkit/src/global-setup.ts": [
+      "packages/testkit/test/ensure-table.spec.ts",
+      "packages/testkit/test/dynamo.spec.ts",
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts"
+    ],
+    "packages/testkit/src/dynamo.ts": [
+      "packages/testkit/test/dynamo.spec.ts",
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts"
+    ],
+    "packages/testkit/src/index.ts": [
+      "packages/testkit/test/dynamo.spec.ts",
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts"
+    ],
+    "packages/testkit/vitest.config.ts": [
+      "packages/testkit/test/ensure-table.spec.ts",
+      "packages/testkit/test/dynamo.spec.ts",
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts",
+      "tools/scripts/test/vitest-projects.spec.ts"
+    ],
+    "packages/testkit/test/tenant-isolation.ts": [
+      "packages/testkit/test/tenant-isolation-a.spec.ts",
+      "packages/testkit/test/tenant-isolation-b.spec.ts"
+    ],
+    ".github/dependabot.yml": [],
     "tools/bootstrap/package.json": [],
     "tools/bootstrap/tsconfig.json": [],
     "tools/bootstrap/src/index.ts": [],

@@ -198,4 +198,77 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Priority:** P2
 **Depends on:** None technical; a decision on timing.
 
+## Local stack and test harness
+
+### Dependency direction between testkit and tools/local
+
+**What:** Move the DynamoDB Local helpers (`localDynamoClient`, `ensureTable`, `createTableInput`, `TableDefinitionMismatchError`) out of `tools/local` into a package under `packages/` (or into `@fisio/testkit`), and make `tools/local`'s `create-table` depend on it, not the reverse. Record in `packages/README.md` which way `tools/*` and `packages/*` may depend on each other.
+
+**Why:** WP0.3 made `@fisio/testkit` (a package) depend on `@fisio/local` (a tool). From WP0.5, `tools/local` gets the auth emulator, tick runner and seed, which run `apps/api` code, while `apps/api` takes `@fisio/testkit` as a dev dependency for its spec harness: `apps/api → testkit → tools/local → apps/api` is a workspace cycle.
+
+**Context:** Maintainability finding from the WP0.3 `/ship` review, deferred by the owner (CLAUDE.md: never widen a work package).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.5 (before `tools/local` imports `apps/api`).
+
+### One local stack per worktree
+
+**What:** Let each git worktree run its own stack: a per-worktree `COMPOSE_PROJECT_NAME` and host ports (the code already honours `DYNAMODB_ENDPOINT`), documented in the README; or document that all worktrees share one stack and that `pnpm local:down` stops it for all of them.
+
+**Why:** `tools/local/docker-compose.yml` has a fixed project name (`fisio-local`) and fixed ports, so parallel worktrees (implementation plan §7) share one in-memory DynamoDB Local. `pnpm local:down` in one worktree, or `local:up` with a changed compose file (which recreates the container), wipes the tables while another worktree's `pnpm test` runs, and that run fails part-way.
+
+**Context:** Red-team finding from the WP0.3 `/ship` review, deferred by the owner.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** The first parallel worktree lane (implementation plan §7).
+
+### A Vitest project for tools/local
+
+**What:** Give `tools/local` its own `vitest.config.ts` (listed in the root `vitest.config.ts`, with the testkit global setup) and move `packages/testkit/test/ensure-table.spec.ts` there, so the specs for `ensureTable` and `create-table` live next to the code and reach the CLI by its own path, not `../../../tools/local/...`.
+
+**Why:** WP0.3 put the specs in testkit because `tools/local` had no Vitest project. A change in `tools/local` is caught only by a spec in another package, and the relative path breaks silently if either package moves.
+
+**Context:** Maintainability finding from the WP0.3 `/ship` review, deferred by the owner. Natural moment: WP0.5, when `tools/local` gets the auth emulator and its specs.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.5.
+
+### CI and local:up speed
+
+**What:** Start the containers right after checkout in CI (`docker compose ... up -d`) and wait for health only before `pnpm test`; use healthcheck `start_period` + `start_interval` (Docker Engine 25+) with a longer steady `interval`; run the independent `create-table` CLI specs concurrently with async `execFile` instead of serial `spawnSync`.
+
+**Why:** Image pull and the DynamoDB Local JVM boot are added straight onto CI time after install, lint and typecheck; the 2 s healthcheck interval adds up to 2 s to every `local:up`; the four CLI spawns block a Vitest worker in turn.
+
+**Context:** Performance findings from the WP0.3 `/ship` review, deferred by the owner. Measure before and after; the suite currently runs in about 4 s locally.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### Local stack hardening from the WP0.3 final review
+
+**What:** Small fixes to `tools/local` and the testkit setup, each with a spec where one is possible:
+- Default the endpoint to `http://127.0.0.1:8000`, matching the compose bind: `localhost` can resolve to `::1` first, where another server on port 8000 would answer instead of DynamoDB Local.
+- In `ensureTable`, compare `error.name` (`ResourceNotFoundException`, `ResourceInUseException`) instead of `instanceof`: the caller's client may come from another copy of `@aws-sdk/client-dynamodb` if the two packages ever drift apart.
+- Check the Node version at the top of `create-table.ts` (type stripping needs >= 22.18; `engines` stays `>=22.12` for the Lambda runtime) and print a clear message instead of an extension error.
+- Add `BillingModeSummary.BillingMode` and `LocalSecondaryIndexes` to the schema fingerprint, and run the check when a create lost the race (`ResourceInUseException`), so a table another process made from a different definition is refused too.
+- Global setup: keep the original error as `cause`, use `error.name` for SDK service errors, and add the "is the stack running?" hint only for connection errors and timeouts.
+- TTL in `DISABLING` state: refuse with a named remedy instead of the raw AWS error.
+- The mismatch message says "delete that table" with no command for it: add `node tools/local/src/delete-table.ts <stage>` or drop that option (and the same words in architecture §11.4).
+- `testDocumentClient()` never exposes its base client, so specs cannot close it; return it, or cache one client per worker.
+- Items written under fresh tenants accumulate in a long-running container (`-inMemory`, no `ttl` on spec items): set `ttl` on spec items or document `local:down && local:up` as the reset.
+- The DynamoDB healthcheck relies on `curl` being in the image; a digest bump to a slimmer base would fail `--wait` after about 60 s with no hint.
+- `isTestkitSetup` in `tools/scripts/test/vitest-projects.spec.ts` should use `path.resolve` so an absolute `globalSetup` entry is accepted; `DEFAULT_LOCAL_ENDPOINT` no longer needs to be exported.
+
+**Why:** None changes behaviour that matters today; each removes a confusing failure or a silent gap that later work packages (WP0.4–WP0.6, more spec files, longer-lived containers) would hit.
+
+**Context:** Final review pass and adversarial pass of the WP0.3 `/ship` run, deferred by the owner (fixing them would have needed a third fix cycle). The adversarial pass also claimed that DynamoDB Local's CORS defaults to `*`; a live probe of `amazon/dynamodb-local:3.3.1` disproved it: no `Access-Control-Allow-Origin` is sent to any origin, so do not add `-cors` (an allow-list would open access).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None; natural moment: WP0.4 or WP0.5, when more specs use the testkit.
+
 ## Completed

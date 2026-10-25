@@ -10,6 +10,7 @@
 | v1.1 | WhatsApp deferred (email only in v1); local-first testing with a deploy gate (§11.4) |
 | v1.2 | Engineering review (`/plan-eng-review`, 18 issues + independent second opinion). Main changes: one Cognito pool with per-user TOTP (§8); per-request client status check (§8.2); no-overlap invariant for slots of any type (§3.2); idempotent outbox keys and an explicit delivery state machine driven by the tick + async invoke, no Streams (§5.4); CloudFront → Lambda Function URL with OAC, no shared secret (§4.4, §9.1); SPA routing by CloudFront Function, no custom error responses (§11.1); reminder catch-up semantics (§5.3); cancel-day idempotency (§5.3); transaction-conflict retry (§5.3); therapist digest + bounce handling in M2 (§3.4); audit without PII (§9.4); spec catalogue (§10); three CDK stacks (§11.1); re-sliced roadmap (§13); i18next and PWA removed from v1 |
 | v1.3 | **Headless UI journey specs** (§10.5): every UI flow is driven through the view-model classes' methods and Observable streams against the real in-process API, with recorded traces published as `docs/journeys.md`; view-model surface coverage enforced; Playwright reduced to binding checks |
+| v1.4 | The local and test tables are built from a shared plain-data table definition, not from the CDK synth, and an existing local table is checked against it (§10.3, §11.4, D23; WP0.3) |
 
 ---
 
@@ -615,7 +616,7 @@ React 19 · TypeScript (strict) · Vite · RxJS 7 · React Router · a **typed I
 
 ### 10.3 Isolation and speed *(decision 18A)*
 
-Every key is tenant-prefixed, so **each API spec file uses a fresh `tid`** and the suite runs in parallel Vitest workers against one shared DynamoDB Local with no truncation and no cleanup. The table is created once per run from the CDK-synthesised definition.
+Every key is tenant-prefixed, so **each API spec file uses a fresh `tid`** and the suite runs in parallel Vitest workers against one shared DynamoDB Local with no truncation and no cleanup. The table is created once per run (the testkit's Vitest global setup) from the shared table definition `infra/lib/table-definition.ts`, the same plain-data module the CDK `Stateful` stack reads (D23).
 
 ### 10.4 Spec catalogue *(decision 17A)*
 
@@ -901,7 +902,7 @@ Started with `pnpm local:up` (Docker containers) and `pnpm dev` (Node processes)
 
 | Cloud component | Local equivalent | Fidelity |
 |---|---|---|
-| DynamoDB | **DynamoDB Local** (Docker image `amazon/dynamodb-local`); the table and GSIs are created from the definition synthesised by CDK, so schema drift is impossible | High — same API: transactions, condition expressions, TTL attribute. **Known difference**: it never raises `TransactionConflict`, hence the fault-injection double (§10.2) |
+| DynamoDB | **DynamoDB Local** (Docker image `amazon/dynamodb-local`); the table and GSIs are created from the shared definition `infra/lib/table-definition.ts`, which the CDK stack also reads, and an existing local table whose keys, indexes or TTL attribute differ from it is refused (delete the table, or `pnpm local:down && pnpm local:up`), so key and index drift cannot go unnoticed (D23) | High — same API: transactions, condition expressions, TTL attribute. **Known difference**: it never raises `TransactionConflict`, hence the fault-injection double (§10.2) |
 | `api` Lambda + Hono | the same Hono app on Node (`@hono/node-server`), watch mode, composed by `runtime/local.ts` | High — identical application code |
 | CloudFront `/api/*` → Function URL with OAC | Vite dev-server proxy `/api → localhost:3000`; the fetch wrapper still computes `x-amz-content-sha256` so the header path is exercised | Edge signing has no local form; configuration is verified by infra assertions, behaviour by the `dev` smoke |
 | Cognito | **Local auth emulator** (`tools/local/auth-emulator`, ~300 lines): implements the `IdentityProvider` port over DynamoDB Local and a sign-in API with **email one-time codes** (delivered through the email channel → Mailpit; wrong/expired/lockout behaviour) and **password + TOTP** for the therapist (`otplib`; the seed prints the secret). Issues RS256 JWTs with Cognito's claims and serves a JWKS; the API verifies them with the same `aws-jwt-verify` configuration, only the issuer URL differs. The SPA's `AuthService` has a `LocalAuthService` implementation selected at build time | Medium — same contracts and flows, not Cognito's code (see cloud-only list) |
@@ -1022,6 +1023,7 @@ Backlog (tracked in `TODOS.md` with context): WhatsApp channel option (§12.1), 
 | D20 | Audit log stores field names, never values | Scrub on erasure | Erasure complete by construction *(15A)* |
 | D21 | Typed Italian strings module, no i18n framework; no PWA in v1 | i18next; vite-plugin-pwa | Scope trim: no v1 user value; both are small later additions *(review Step 0)* |
 | D22 | **Headless UI journeys against the real in-process API** are the primary UI tests and the documentation of how the UI uses the model; Playwright reduced to binding checks | View-models with a fake API only (documents the UI side but not real behaviour); Playwright for every journey (slow, brittle, hides the method/stream sequence behind the DOM) | The brief wants tests that document the sequence of view-model calls and stream subscriptions without HTML; running them against the real API makes them true, and the traces make them readable (§10.5) |
+| D23 | **One plain-data table definition** (`infra/lib/table-definition.ts`) read by the CDK stack, the local `create-table` step and the test setup; an existing local table is checked against it | Create the local table from the CDK-synthesised template | Plain data loads in the test setup and in `pnpm local:up` without CDK or a synth step, and keeps the single source the "no drift" guarantee needs; the check catches a long-running container that still holds a table from an older definition *(WP0.3)* |
 
 ---
 

@@ -27,3 +27,12 @@ updates:
       day: monday
       time: "07:00"
       timezone: Europe/Rome
+
+  # The local stack's images (tools/local/docker-compose.yml), pinned by tag and digest.
+  - package-ecosystem: docker-compose
+    directory: /tools/local
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Rome

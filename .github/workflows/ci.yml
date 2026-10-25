@@ -42,8 +42,6 @@ jobs:
       - run: pnpm typecheck
 
       - name: Start local containers (DynamoDB Local, Mailpit)
-        # The compose file lands with WP0.3; until then the suite needs no containers.
-        if: hashFiles('tools/local/docker-compose.yml') != ''
         run: pnpm local:up
 
       - run: pnpm test
