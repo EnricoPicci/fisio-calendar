@@ -49,45 +49,41 @@
 
 ## API
 
-### Slot ids in URL paths
+### Slot ids through CloudFront and the SPA client
 
-**What:** Give `SlotId` a URL-safe path form (for example `SlotId.toPathSegment` / `fromPathSegment` with `encodeURIComponent`) and require the SPA API client and the route param schemas to use it; add a spec that round-trips `/admin/slots/{slotId}/cancel` through the in-process fetch adapter.
+**What:** Add a `dev` smoke step that sends `POST /api/v1/...{slotId}` with `SlotId.toPathSegment(id)` (`%3A`, `%23`) through CloudFront and checks the route receives the same id; make the SPA `ApiClient` build every slot path with `SlotId.toPathSegment`.
 
-**Why:** A slot id contains `#` and `:`. Unencoded in `POST /admin/slots/{slotId}/cancel`, the `#` starts a URL fragment, so the request silently hits `/admin/slots/2027-03-28T09:00` and returns 404 or the wrong route.
+**Why:** WP0.4 proved the encoding round-trips in-process (`apps/api/test/slot-id-path.spec.ts`); CloudFront normalisation or the Function URL's SigV4 canonical path could still re-encode or decode `%23`, which only the cloud shows.
 
-**Context:** Red-team finding in the WP0.2 `/ship` review. Decide in WP0.4 (route params) at the latest, before WP1.4 adds the slot cancel and reopen routes. Check that `%23` survives CloudFront and the Function URL.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** WP0.4.
-
-### OpenAPI patterns for refine-only schemas
-
-**What:** Give `SlotIdSchema`, `IsoDateSchema` and `LocalTimeSchema` in `packages/contracts/src/schemas.ts` a `.regex()` and an example next to their `refine`, use a brand instead of `transform` for `SlotIdSchema` if response schemas need it, and assert in the OpenAPI generation spec that these fields carry a pattern. Word the `conflict_retry_exhausted` meaning so it cannot drift from the API's retry constant ("after 3 attempts" today).
-
-**Why:** `@hono/zod-openapi` cannot describe a `refine` or a `transform`, so `docs/openapi.json` would show plain strings and the typed SPA client would lose the formats.
-
-**Context:** Red-team and maintainability findings in the WP0.2 `/ship` review; the schemas validate correctly today, only the generated contract is affected.
+**Context:** Rest of the WP0.2 red-team finding "Slot ids in URL paths", whose domain and route half landed in WP0.4.
 
 **Effort:** S
 **Priority:** P2
-**Depends on:** WP0.4 (OpenAPI generation).
+**Depends on:** WP0.7 (ApiClient), WP0.10 (dev smoke).
 
-### Map domain time errors to `validation_failed`
+### Domain time errors with their request path
 
-**What:** In the API error mapper, turn `NonexistentLocalTimeError`, `InvalidTimeZoneError` and the `RangeError`s of the time helpers into `validation_failed` (400) with the offending path, and cover it with an endpoint spec (a rule that starts at 02:30 on 2027-03-28).
+**What:** When the rules and range endpoints arrive, have their use cases raise `ApiError('validation_failed', { errors })` with the offending field when a domain time helper refuses an input, and cover it with an endpoint spec (a rule that starts at 02:30 on 2027-03-28). If a time zone ever comes from a request or the database, decide whether `InvalidTimeZoneError` becomes `validation_failed`.
 
-**Why:** `SlotIdSchema` now refuses a slot id inside the DST gap, but other inputs (rule start times, date ranges) reach `localDateTimeToUtc` as separate date and time fields. Unmapped, the throw becomes a 500.
+**Why:** WP0.4's error mapper turns `NonexistentLocalTimeError`, `InvalidLocalValueError` and `InvalidSlotIdError` into `validation_failed` by name, but it cannot know the path, so the SPA cannot highlight the field. `InvalidTimeZoneError` maps to `internal_error` today, because no request carries a zone and the error means the runtime lacks tz data (the API also refuses to start then).
 
-Make `SlotIdSchema` fail validation rather than throw: `SlotId.startExists` rethrows anything that is not `NonexistentLocalTimeError` (an `InvalidTimeZoneError` on a runtime without full ICU time-zone data), and a throw inside a Zod `refine` escapes `safeParse` as a 500. Either catch in the refine or check at startup that Europe/Rome resolves. Make `startExists` return `false` for a malformed id instead of throwing, or keep it off the public `SlotId` object.
-
-Recognise the domain errors by name or a shared brand as well as `instanceof`: two copies of `@fisio/domain` in one bundle make `instanceof` fail and turn a 400 into a 500. `classifyError` already does this for `PermanentError`; use one helper for every exported error.
-
-**Context:** WP0.2 follow-up 26. The slot-id half is fixed in `SlotIdSchema` and `SlotId.format`; the mapper does not exist before WP0.4.
+**Context:** Rest of WP0.2 follow-up 26 ("Map domain time errors to `validation_failed`").
 
 **Effort:** S
-**Priority:** P2
-**Depends on:** WP0.4.
+**Priority:** P3
+**Depends on:** WP1.1 (rules endpoints).
+
+### OpenAPI components without a route
+
+**What:** If the SPA needs a schema in `docs/openapi.json` before a route uses it, register it without `OpenAPIRegistry.register()`, or make `@hono/zod-openapi` and our packages load the same Zod build.
+
+**Why:** `register()` calls the `.openapi()` method that `zod-to-openapi` adds to Zod's prototype; it patched the CommonJS copy of Zod while `@fisio/contracts` uses the ESM copy, so `register()` threw. Schemas named with `.meta({ id })` and used by a route are fine, and that is all WP0.4 needs.
+
+**Context:** Found in WP0.4 while generating the document (Zod's dual-package hazard).
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** WP0.7 (generated SPA types), only if needed.
 
 ### Bounds for date ranges and the booking horizon
 
@@ -180,7 +176,7 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 
 **Why:** The packages export raw `.ts` with extensionless relative imports (`./time`), and they use TypeScript constructor parameter properties (`readonly date` in `NonexistentLocalTimeError`, `InvalidTimeZoneError`, `InvalidSlotIdError`). Node's type stripping rejects both: extensionless specifiers do not resolve, and parameter properties fail with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, so a loader that only adds extensions is not enough (consider `erasableSyntaxOnly`).
 
-**Context:** WP0.2 follow-up 15 (adversarial review). Bundled Lambdas are unaffected; scripts run directly are not.
+**Context:** WP0.2 follow-up 15 (adversarial review). Bundled Lambdas are unaffected; scripts run directly are not. WP0.4 runs its two scripts through `tsx` (`pnpm dev`, `pnpm openapi`), a root dev dependency; the WP0.9 bundle smoke and the first `tools/*` script still need the decision.
 
 **Effort:** S
 **Priority:** P2
@@ -251,14 +247,12 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 ### Local stack hardening from the WP0.3 final review
 
 **What:** Small fixes to `tools/local` and the testkit setup, each with a spec where one is possible:
-- Default the endpoint to `http://127.0.0.1:8000`, matching the compose bind: `localhost` can resolve to `::1` first, where another server on port 8000 would answer instead of DynamoDB Local.
 - In `ensureTable`, compare `error.name` (`ResourceNotFoundException`, `ResourceInUseException`) instead of `instanceof`: the caller's client may come from another copy of `@aws-sdk/client-dynamodb` if the two packages ever drift apart.
 - Check the Node version at the top of `create-table.ts` (type stripping needs >= 22.18; `engines` stays `>=22.12` for the Lambda runtime) and print a clear message instead of an extension error.
 - Add `BillingModeSummary.BillingMode` and `LocalSecondaryIndexes` to the schema fingerprint, and run the check when a create lost the race (`ResourceInUseException`), so a table another process made from a different definition is refused too.
 - Global setup: keep the original error as `cause`, use `error.name` for SDK service errors, and add the "is the stack running?" hint only for connection errors and timeouts.
 - TTL in `DISABLING` state: refuse with a named remedy instead of the raw AWS error.
 - The mismatch message says "delete that table" with no command for it: add `node tools/local/src/delete-table.ts <stage>` or drop that option (and the same words in architecture §11.4).
-- `testDocumentClient()` never exposes its base client, so specs cannot close it; return it, or cache one client per worker.
 - Items written under fresh tenants accumulate in a long-running container (`-inMemory`, no `ttl` on spec items): set `ttl` on spec items or document `local:down && local:up` as the reset.
 - The DynamoDB healthcheck relies on `curl` being in the image; a digest bump to a slimmer base would fail `--wait` after about 60 s with no hint.
 - `isTestkitSetup` in `tools/scripts/test/vitest-projects.spec.ts` should use `path.resolve` so an absolute `globalSetup` entry is accepted; `DEFAULT_LOCAL_ENDPOINT` no longer needs to be exported.
@@ -272,3 +266,8 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Depends on:** None; natural moment: WP0.4 or WP0.5, when more specs use the testkit.
 
 ## Completed
+
+- **Slot ids in URL paths** (WP0.4): `SlotId.toPathSegment`/`fromPathSegment`; route params decode through Hono and `SlotIdSchema`; round-trip spec through the in-process fetch adapter. The CloudFront check and the SPA client remain ("Slot ids through CloudFront and the SPA client").
+- **OpenAPI patterns for refine-only schemas** (WP0.4): `SlotIdSchema`, `IsoDateSchema` and `LocalTimeSchema` carry the domain's shape as `regex` plus an example; the OpenAPI spec asserts the patterns; `conflict_retry_exhausted` no longer names the attempt count.
+- **Map domain time errors to `validation_failed`** (WP0.4): the API error mapper recognises the domain errors by name (`isErrorNamed`, shared with `classifyError`); the time helpers throw `InvalidLocalValueError` for malformed input; `SlotIdSchema`'s refinement never throws, and the API refuses to start without Europe/Rome tz data. The request-path part remains ("Domain time errors with their request path").
+- **Local stack hardening, two items** (WP0.4): the DynamoDB Local endpoint defaults to `127.0.0.1`; `testDocumentClient()` is cached per spec file and closed with `closeTestDocumentClient()`.

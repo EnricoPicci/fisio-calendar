@@ -1,3 +1,5 @@
+import { isErrorNamed } from './errors';
+
 /**
  * Notification delivery state machine (docs/architecture.md §5.4, decision 12A). Pure functions:
  * each transition takes the current state and the instant, and returns a new state. The notifier
@@ -75,7 +77,7 @@ export type ErrorClass = 'retryable' | 'permanent';
  * name as well, so an error from a second copy of this module (two bundles) still counts.
  */
 export function classifyError(error: unknown): ErrorClass {
-  return error instanceof PermanentError || nameOf(error) === 'PermanentError'
+  return error instanceof PermanentError || isErrorNamed(error, 'PermanentError')
     ? 'permanent'
     : 'retryable';
 }
@@ -216,14 +218,4 @@ function capErrorText(text: string): string {
   const last = text.charCodeAt(MAX_ERROR_LENGTH - 1);
   const splitsPair = last >= 0xd800 && last <= 0xdbff;
   return text.slice(0, splitsPair ? MAX_ERROR_LENGTH - 1 : MAX_ERROR_LENGTH);
-}
-
-function nameOf(error: unknown): unknown {
-  try {
-    return typeof error === 'object' && error !== null
-      ? (error as { name?: unknown }).name
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }

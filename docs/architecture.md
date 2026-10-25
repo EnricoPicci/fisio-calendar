@@ -11,6 +11,7 @@
 | v1.2 | Engineering review (`/plan-eng-review`, 18 issues + independent second opinion). Main changes: one Cognito pool with per-user TOTP (§8); per-request client status check (§8.2); no-overlap invariant for slots of any type (§3.2); idempotent outbox keys and an explicit delivery state machine driven by the tick + async invoke, no Streams (§5.4); CloudFront → Lambda Function URL with OAC, no shared secret (§4.4, §9.1); SPA routing by CloudFront Function, no custom error responses (§11.1); reminder catch-up semantics (§5.3); cancel-day idempotency (§5.3); transaction-conflict retry (§5.3); therapist digest + bounce handling in M2 (§3.4); audit without PII (§9.4); spec catalogue (§10); three CDK stacks (§11.1); re-sliced roadmap (§13); i18next and PWA removed from v1 |
 | v1.3 | **Headless UI journey specs** (§10.5): every UI flow is driven through the view-model classes' methods and Observable streams against the real in-process API, with recorded traces published as `docs/journeys.md`; view-model surface coverage enforced; Playwright reduced to binding checks |
 | v1.4 | The local and test tables are built from a shared plain-data table definition, not from the CDK synth, and an existing local table is checked against it (§10.3, §11.4, D23; WP0.3) |
+| v1.5 | API skeleton (WP0.4): `internal_error` (500) joins the error catalogue; problem+json body and validation details fixed (§5.2); token expiry checked against the `Clock` port (§8.2, D24); each route declares its access level once and the authorisation matrix is generated from the declarations (§5.2, D25); ports shared by several packages live in `packages/domain` (D26) |
 
 ---
 
@@ -264,7 +265,7 @@ fisio-calendar/
 │     ├─ src/runtime/      composition roots: lambda.ts (AWS adapters) and local.ts (local adapters, in-process AsyncInvoker, /__dev routes)
 │     └─ test/             API specs (executable documentation), fault-injection doubles
 ├─ packages/
-│  ├─ domain/              pure TypeScript, no AWS: slot-id.ts, rules & slot generation (overlap invariant), booking policy, notification state machine, time helpers
+│  ├─ domain/              pure TypeScript, no AWS: slot-id.ts, rules & slot generation (overlap invariant), booking policy, notification state machine, time helpers, shared ports (Clock, AsyncInvoker, NotificationChannel)
 │  ├─ contracts/           Zod schemas + DTO types shared by web and api; errors.ts (ErrorCode catalogue + HTTP mapping); OpenAPI generated from here
 │  └─ testkit/             shared test tooling: in-process fetch adapter (Hono app.request), ObservableRecorder, TraceRecorder, JourneyHarness, FaultInjectingDynamo, fake JWTs, FakeChannel/Mailpit readers, journey report renderer
 ├─ infra/                  AWS CDK app (TypeScript): Stateful, App, Edge stacks + assertions + bundle smoke
@@ -284,6 +285,8 @@ The **domain** package has no I/O and no AWS dependency: it is where the rules i
 ### 5.2 API
 
 - Style: JSON over HTTPS, `/api/v1` prefix, resource-oriented, errors as RFC 9457 `application/problem+json` whose `type` is `urn:fisio:error:<code>`.
+- Problem body: `{type, code, title, status, detail?, errors?}`; `code` repeats the code from `type`, `title` is the catalogue meaning, and `errors` (for `validation_failed` only) lists `{in: body | query | path | header, path, code}` with the Zod issue code, never a sentence. An unknown path or method is `not_found`; any unexpected error is `internal_error` with nothing of the error in the body (it is logged). Validation reports the first rejected request part.
+- Access: every route declares one level, `public`, `member` (client or therapist) or `therapist`, with `defineRoute` in `apps/api/src/http/access.ts`. The declaration attaches the authorisation middleware (before validation, so a missing token is 401, never 400), appears in the OpenAPI document as `x-access` with the bearer `security` requirement, and is what the generated authorisation-matrix spec iterates over *(D25)*.
 - Framework: **Hono** with `@hono/zod-openapi` — routes declare their Zod request/response schemas once; the same declaration validates at runtime, types the handler, and generates the OpenAPI document published to `docs/openapi.json`. Hono runs on Lambda (`hono/aws-lambda`), in Node for local development (`@hono/node-server`), and **in-process in tests** (`app.request()`).
 - One Lambda for the whole API: one artifact, one cold start to warm, trivial to test; with < 1 request/s there is nothing to gain from per-route functions.
 
@@ -303,7 +306,8 @@ The **domain** package has no I/O and no AWS dependency: it is where the rules i
 | `rule_overlap` | 422 | Rule would overlap another rule in time (any type) |
 | `client_exists` | 409 | A client with this email exists |
 | `client_blocked` | 403 | Operation refused because the client is blocked |
-| `conflict_retry_exhausted` | 503 | Transaction conflicts persisted after 3 attempts — retry later |
+| `conflict_retry_exhausted` | 503 | Transaction conflicts persisted through every bounded retry (§5.3) — retry later |
+| `internal_error` | 500 | Unexpected server error; the response discloses nothing about it |
 
 The SPA maps codes to Italian strings; specs assert codes, never sentences.
 
@@ -546,7 +550,7 @@ React 19 · TypeScript (strict) · Vite · RxJS 7 · React Router · a **typed I
 
 ### 8.2 Authorisation in the API *(decision 2A)*
 
-`aws-jwt-verify` validates signature, issuer, audience and expiry against the pool's JWKS (cached). The middleware then **loads the caller's client item** (one strongly consistent `GetItem`, ~1 ms) and refuses the request with `forbidden` unless the status is `enabled` (for the therapist: the settings item must exist). This is what makes blocking, erasure and not-yet-accepted invitations take effect on the next request instead of at token expiry. Route guards check the role; use cases check ownership (a client can only act on their own bookings). This lives in code — so it is covered by the API specs — rather than in an edge authoriser.
+`aws-jwt-verify` validates the signature, issuer and app client against the pool's JWKS (cached); the expiry is checked in the middleware (below). The middleware then **loads the caller's client item** (one strongly consistent `GetItem`, ~1 ms) and refuses the request with `forbidden` unless the status is `enabled` (for the therapist: the settings item must exist). This is what makes blocking, erasure and not-yet-accepted invitations take effect on the next request instead of at token expiry. The API accepts **access tokens** of the SPA's app client only (`token_use = access`, `client_id`), with the `role` and `tenantId` claims of the pre-token-generation trigger. Expiry and not-before are compared with the `Clock` port, not by `aws-jwt-verify`, which reads the real time *(D24)*. A JWKS that cannot be fetched is a 500, not a 401, so an outage does not sign every user out. Route guards check the role; use cases check ownership (a client can only act on their own bookings). This lives in code — so it is covered by the API specs — rather than in an edge authoriser.
 
 ---
 
@@ -1024,6 +1028,9 @@ Backlog (tracked in `TODOS.md` with context): WhatsApp channel option (§12.1), 
 | D21 | Typed Italian strings module, no i18n framework; no PWA in v1 | i18next; vite-plugin-pwa | Scope trim: no v1 user value; both are small later additions *(review Step 0)* |
 | D22 | **Headless UI journeys against the real in-process API** are the primary UI tests and the documentation of how the UI uses the model; Playwright reduced to binding checks | View-models with a fake API only (documents the UI side but not real behaviour); Playwright for every journey (slow, brittle, hides the method/stream sequence behind the DOM) | The brief wants tests that document the sequence of view-model calls and stream subscriptions without HTML; running them against the real API makes them true, and the traces make them readable (§10.5) |
 | D23 | **One plain-data table definition** (`infra/lib/table-definition.ts`) read by the CDK stack, the local `create-table` step and the test setup; an existing local table is checked against it | Create the local table from the CDK-synthesised template | Plain data loads in the test setup and in `pnpm local:up` without CDK or a synth step, and keeps the single source the "no drift" guarantee needs; the check catches a long-running container that still holds a table from an older definition *(WP0.3)* |
+| D24 | **Token expiry checked against the `Clock` port**; `aws-jwt-verify` checks signature, issuer, algorithm, `token_use` and `client_id` with its own expiry check disabled | `aws-jwt-verify` alone; `jose` (which accepts a current date) | The library reads `Date.now()`, so specs at a fixed instant would pass or fail by the real date; with the system clock in production the result is identical, and the architecture keeps the library it names *(WP0.4)* |
+| D25 | **Each route declares its access level once** (`defineRoute`), and the authorisation matrix spec is generated from those declarations and checked against Hono's route table | Per-route guard calls; a hand-written matrix | A route cannot be served without a declaration, and the matrix covers every route without being maintained by hand *(WP0.4)* |
+| D26 | **Ports shared by several packages live in `packages/domain`** (`Clock`, `AsyncInvoker`, `NotificationChannel`, plus `InProcessAsyncInvoker`), so the testkit implements them without depending on `apps/api` | Ports in `apps/api` | `apps/api` has the testkit as a dev dependency; a testkit that imported `apps/api` would close a workspace cycle *(WP0.4)* |
 
 ---
 

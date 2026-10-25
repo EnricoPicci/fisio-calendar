@@ -1,7 +1,9 @@
 # @fisio/contracts
 
-The agreement between the web app and the API: Zod schemas and DTO types, the `ErrorCode`
-catalogue (HTTP status and `urn:fisio:error:<code>`), and the typed Italian strings.
+The agreement between the web app and the API: Zod schemas and DTO types (`src/api.ts`: the
+problem+json body, `GET /me`, `GET /health`), the `ErrorCode` catalogue (HTTP status and
+`urn:fisio:error:<code>`), and the typed Italian strings. Refined formats carry a `regex` and an
+example so `docs/openapi.json` shows their pattern.
 
 - **Never here:** business rules (they belong in domain) or anything that runs only on one side.
 - **Depends on:** `@fisio/domain` for formats it owns (dates, times, `SlotId`), and `zod`.

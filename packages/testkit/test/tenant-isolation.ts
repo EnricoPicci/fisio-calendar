@@ -1,6 +1,6 @@
 import { PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { afterAll, expect, it } from 'vitest';
-import { freshTenant, TEST_TABLE, testDocumentClient } from '../src/index';
+import { closeTestDocumentClient, freshTenant, TEST_TABLE, testDocumentClient } from '../src/index';
 
 /**
  * Body of the two tenant-isolation spec files (§10.3). Both files run in parallel workers and
@@ -10,7 +10,7 @@ import { freshTenant, TEST_TABLE, testDocumentClient } from '../src/index';
 export function tenantIsolationSpec(file: string): void {
   const tid = freshTenant();
   const db = testDocumentClient();
-  afterAll(() => db.destroy());
+  afterAll(closeTestDocumentClient);
 
   it("two spec files with different tenants do not see each other's items", async () => {
     const sortKeys = ['ITEM#1', 'ITEM#2', 'ITEM#3'];

@@ -6,3 +6,8 @@ packages:
   - tools/bootstrap
   - e2e
   - tools/scripts
+
+# esbuild (via tsx) ships its binary as an optional dependency; its postinstall only
+# re-checks it, so it is not allowed to run.
+allowBuilds:
+  esbuild: false

@@ -49,6 +49,14 @@ export class InvalidSlotIdError extends Error {
 
 const PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})#([a-z]+)$/;
 
+/**
+ * The shape of an id, without the real-date, time-range and type checks: published as the
+ * OpenAPI `pattern`, which cannot express those (contracts `SlotIdSchema` adds them back).
+ */
+export const SLOT_ID_SHAPE = new RegExp(
+  `^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}#(${SLOT_TYPES.join('|')})$`,
+);
+
 function isSlotType(value: string): value is SlotType {
   return (SLOT_TYPES as readonly string[]).includes(value);
 }
@@ -61,8 +69,14 @@ function check(input: string, parts: SlotIdParts): void {
   }
 }
 
-/** False when the start falls in a gap the Rome clocks skip (02:30 on 2027-03-28). */
-function startExists(id: SlotId): boolean {
+/**
+ * False when the start falls in a gap the Rome clocks skip (02:30 on 2027-03-28), and for a
+ * string that is not a slot id at all, so a schema refinement never throws. A runtime without
+ * Europe/Rome tz data still throws `InvalidTimeZoneError`: that is a broken deployment, which
+ * the API refuses at startup.
+ */
+function startExists(id: string): boolean {
+  if (!is(id)) return false;
   const { date, start } = parse(id);
   try {
     localDateTimeToUtc(date, start, THERAPIST_TIME_ZONE);
@@ -76,7 +90,7 @@ function startExists(id: SlotId): boolean {
 function format(parts: SlotIdParts): SlotId {
   const id = `${parts.date}T${parts.start}#${parts.type}`;
   check(id, parts);
-  if (!startExists(id as SlotId)) {
+  if (!startExists(id)) {
     throw new InvalidSlotIdError(id, `start does not exist in ${THERAPIST_TIME_ZONE}`);
   }
   return id as SlotId;
@@ -106,7 +120,36 @@ function is(input: string): input is SlotId {
 }
 
 /**
- * `format` builds an id from parts, `parse` reads one, `of` brands a string, `is` tests one,
- * `startExists` checks that its start is a real Rome wall-clock time.
+ * The id as one URL path segment. `#` would start a fragment (`/admin/slots/2027-03-28T09:00`
+ * reaches the server) and `:` is reserved, so both are percent-encoded. Hono decodes path
+ * params, so a route reads the plain id back.
  */
-export const SlotId = { format, parse, of, is, startExists } as const;
+function toPathSegment(id: SlotId): string {
+  return encodeURIComponent(id);
+}
+
+/** The id from a path segment written by {@link toPathSegment}, or `InvalidSlotIdError`. */
+function fromPathSegment(segment: string): SlotId {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    throw new InvalidSlotIdError(segment, 'not a valid percent-encoded path segment');
+  }
+  return of(decoded);
+}
+
+/**
+ * `format` builds an id from parts, `parse` reads one, `of` brands a string, `is` tests one,
+ * `startExists` checks that its start is a real Rome wall-clock time, `toPathSegment` and
+ * `fromPathSegment` carry one in a URL path.
+ */
+export const SlotId = {
+  format,
+  parse,
+  of,
+  is,
+  startExists,
+  toPathSegment,
+  fromPathSegment,
+} as const;

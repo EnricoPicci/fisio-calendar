@@ -28,6 +28,7 @@ const EXPECTED: Record<ErrorCode, number> = {
   client_exists: 409,
   client_blocked: 403,
   conflict_retry_exhausted: 503,
+  internal_error: 500,
 };
 
 describe('ErrorCode catalogue (architecture §5.2)', () => {

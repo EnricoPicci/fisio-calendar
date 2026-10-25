@@ -33,7 +33,11 @@ export const ERROR_CATALOGUE = {
   client_blocked: { status: 403, meaning: 'Operation refused because the client is blocked' },
   conflict_retry_exhausted: {
     status: 503,
-    meaning: 'Transaction conflicts persisted after 3 attempts: retry later',
+    meaning: 'Transaction conflicts persisted through every bounded retry: retry later',
+  },
+  internal_error: {
+    status: 500,
+    meaning: 'Unexpected server error; the response discloses nothing about it',
   },
 } as const satisfies Record<string, { status: number; meaning: string }>;
 
