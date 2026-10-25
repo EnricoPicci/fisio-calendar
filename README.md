@@ -11,10 +11,10 @@ runs and is tested locally.
 
 ```
 apps/web        SPA: src/pages (templates) · src/viewmodels · src/services · test/journeys
-apps/api        Lambda: src/http · src/usecases · src/repo · src/notify · src/identity · src/handlers · src/runtime
+apps/api        Lambda: src/http · src/usecases · src/repo · src/notify · src/identity · src/jobs · src/handlers · src/runtime (incl. the `pnpm tick` CLI)
 packages/       domain (pure TS) · contracts (Zod, errors, strings) · testkit (harness, recorders, doubles)
 infra/          CDK: Stateful, App, Edge stacks · assertions · bundle smoke
-tools/          local (docker-compose; auth-emulator and seed packages; tick) · bootstrap (therapist CLI) · scripts
+tools/          local (docker-compose; auth-emulator and seed packages; table and SMTP helpers) · bootstrap (therapist CLI) · scripts
 e2e/            Playwright binding journeys
 docs/           architecture, implementation plan, generated specs/journeys/openapi
 ```

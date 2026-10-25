@@ -1,5 +1,9 @@
-import { closeTestDocumentClient } from '@fisio/testkit';
+import { randomUUID } from 'node:crypto';
+import { PutCommand } from '@aws-sdk/lib-dynamodb';
+import { ClientIdSchema } from '@fisio/contracts';
+import { closeTestDocumentClient, TEST_TABLE, testDocumentClient } from '@fisio/testkit';
 import { afterAll, describe, expect, it } from 'vitest';
+import { clientEmailGsi2, clientSk, tenantPk } from '../src/repo/keys';
 import { apiHarness } from './harness';
 
 const h = apiHarness();
@@ -27,6 +31,36 @@ describe('GET /me: the caller and their role (architecture §5.2, §8.2)', () =>
       email: client.email,
       phone: '+393331234567',
       locale: 'it',
+    });
+  });
+
+  // Value: protects=a client item written before WP0.6 (no channels, emailStatus or invitedAt) still reads, so existing clients keep signing in; fails_when=ClientRecordSchema loses the defaults for channels or emailStatus, and every older item fails the status check with a 500; why_new=WP0.6 adds required-with-default fields to the client item and no spec reads an item without them; seam=a raw item put with the repository's key builders; no_claim=a migration of stored items (none planned)
+  it('a client item written before WP0.6 still reads, with the default channels', async () => {
+    const clientId = ClientIdSchema.parse(randomUUID());
+    const email = `${clientId}@example.test`;
+    await testDocumentClient().send(
+      new PutCommand({
+        TableName: TEST_TABLE,
+        Item: {
+          PK: tenantPk(h.tenantId),
+          SK: clientSk(clientId),
+          entity: 'CLIENT',
+          ...clientEmailGsi2(email),
+          clientId,
+          name: 'Elena Gallo',
+          email,
+          status: 'enabled',
+          locale: 'it',
+          createdAt: '2026-09-01T08:00:00.000Z',
+        },
+      }),
+    );
+    const res = await h.call('GET', '/me', { token: h.token(clientId, 'client') });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ role: 'client', clientId });
+    expect(await h.clients.get(h.tenantId, clientId)).toMatchObject({
+      channels: { email: true, whatsapp: false },
+      emailStatus: 'ok',
     });
   });
 

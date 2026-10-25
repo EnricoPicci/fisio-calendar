@@ -1,7 +1,9 @@
 import { type Clock, localDateTimeToUtc, THERAPIST_TIME_ZONE } from '@fisio/domain';
 import { Hono } from 'hono';
+import type { AddClientDeps } from '../usecases/add-client';
 import type { ApiEnv, AuthDeps } from './access';
 import { type ApiRouter, type ErrorLogger, installProblemHandling, newApiRouter } from './router';
+import { registerAdminClients } from './routes/admin-clients';
 import { registerHealth } from './routes/health';
 import { registerMe } from './routes/me';
 
@@ -12,7 +14,7 @@ import { registerMe } from './routes/me';
  */
 export const API_BASE_PATH = '/api/v1';
 
-export interface AppDeps extends AuthDeps {
+export interface AppDeps extends AuthDeps, AddClientDeps {
   readonly clock: Clock;
   readonly log: ErrorLogger;
 }
@@ -34,6 +36,7 @@ export function createApp(deps: AppDeps, options: AppOptions = {}): ApiApp {
   const api = newApiRouter(deps.log);
   registerHealth(api, deps);
   registerMe(api, deps);
+  registerAdminClients(api, deps);
   options.extend?.(api, deps);
 
   api.openAPIRegistry.registerComponent('securitySchemes', 'bearerAuth', {
