@@ -367,10 +367,11 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
     const { auth: tabA, storage } = await signedInClient();
     clock.advance({ minutes: 1 });
     // The other tab's rotation landed first: its pair is in storage when this answer arrives.
+    // Short fixture values: the pre-gate's secret scanner reads long token-named literals as keys.
     const rotatedMeanwhile = JSON.stringify({
-      accessToken: 'other-tab-access',
-      idToken: 'other-tab-id',
-      refreshToken: 'other-tab-refresh',
+      accessToken: 'a2',
+      idToken: 'i2',
+      refreshToken: 'r2',
     });
     const otherFirst: typeof globalThis.fetch = async (...args) => {
       const response = await fetch(...args);
@@ -380,14 +381,14 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
     const late = new LocalAuthService({ issuer: t.config.issuer, fetch: otherFirst, storage });
 
     await expect(firstValueFrom(late.refresh())).resolves.toEqual({
-      accessToken: 'other-tab-access',
-      idToken: 'other-tab-id',
+      accessToken: 'a2',
+      idToken: 'i2',
     });
 
     expect(storage.get(LOCAL_TOKENS_KEY)).toBe(rotatedMeanwhile);
     await expect(firstValueFrom(tabA.restore())).resolves.toEqual({
-      accessToken: 'other-tab-access',
-      idToken: 'other-tab-id',
+      accessToken: 'a2',
+      idToken: 'i2',
     });
   });
 
