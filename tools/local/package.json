@@ -10,9 +10,15 @@
   "dependencies": {
     "@aws-sdk/client-dynamodb": "3.1146.0",
     "@aws-sdk/lib-dynamodb": "3.1146.0",
-    "@fisio/infra": "workspace:*"
+    "@fisio/domain": "workspace:*",
+    "@fisio/infra": "workspace:*",
+    "nodemailer": "^10.2.1"
   },
   "exports": {
-    "./table": "./src/table.ts"
+    "./table": "./src/table.ts",
+    "./smtp": "./src/smtp-email-channel.ts"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^8.0.2"
   }
 }

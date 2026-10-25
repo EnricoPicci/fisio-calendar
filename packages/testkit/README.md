@@ -10,7 +10,9 @@ tenants, `FaultInjectingDynamo`, fake JWTs, the in-process fetch adapter, `FakeC
   project's `globalSetup`). WP0.4 added the API spec pieces: `TestTokenIssuer` (RS256 key, JWKS,
   Cognito-shaped access tokens), `FakeChannel` and `inProcessFetch(app)`; the in-process
   `AsyncInvoker` is `InProcessAsyncInvoker` in `@fisio/domain`. The API composes them in
-  `apps/api/test/harness.ts`. WP0.8 adds the recorders and the journey harness.
+  `apps/api/test/harness.ts`. WP0.6 added the Mailpit reader (`mailpitMessage(id)`,
+  `MAILPIT_API`) for the SMTP channel's contract spec. WP0.8 adds
+  the recorders and the journey harness.
 - **Never here:** production code. Nothing under `apps/*/src` may import this package.
 - **Depends on:** `@fisio/domain` (ports), `@fisio/infra` (the table definition), `@fisio/local`
   (DynamoDB Local client and `ensureTable`), the AWS SDK DynamoDB clients. Never on `apps/*`:

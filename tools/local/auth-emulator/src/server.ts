@@ -3,6 +3,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { isAuthErrorCode } from '@fisio/contracts';
 import { type NotificationChannel, systemClock } from '@fisio/domain';
 import { tableName } from '@fisio/infra/table-definition';
+import { SmtpEmailChannel } from '@fisio/local/smtp';
 import { localDynamoClient } from '@fisio/local/table';
 import { serve } from '@hono/node-server';
 import { type Context, Hono } from 'hono';
@@ -110,32 +111,25 @@ export function createEmulatorApp(emulator: AuthEmulator, config: EmulatorConfig
 }
 
 /**
- * Prints one-time codes to the emulator's console. WP0.6 replaces it with `SmtpEmailChannel`, so
- * the codes land in Mailpit like every other local email.
+ * The emulator on DynamoDB Local's `fisio-local` table, as `pnpm dev`, the seed and the local
+ * bootstrap use it. One-time codes go to Mailpit (`SmtpEmailChannel`, http://localhost:8025)
+ * like every other local email, unless another channel is given.
  */
-export const consoleChannel: NotificationChannel = {
-  channel: 'email',
-  async send(message) {
-    console.log(`[auth-emulator] email to ${message.to}: ${message.subject}\n${message.text}`);
-    return {};
-  },
-};
-
-/** The emulator on DynamoDB Local's `fisio-local` table, as `pnpm dev` and the seed use it. */
-export function createLocalEmulator() {
+export function createLocalEmulator(options: { channel?: NotificationChannel } = {}) {
   const config = DEFAULT_EMULATOR_CONFIG;
   const doc = DynamoDBDocumentClient.from(localDynamoClient(), {
     marshallOptions: { removeUndefinedValues: true },
   });
   const store = new EmulatorStore(doc, tableName('local'), config.poolId);
+  const channel = options.channel ?? new SmtpEmailChannel();
   const emulator = new AuthEmulator({
     store,
     signer: new RsaSigner(),
-    channel: consoleChannel,
+    channel,
     clock: systemClock,
     config,
   });
-  return { config, doc, store, emulator };
+  return { config, doc, store, emulator, channel };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

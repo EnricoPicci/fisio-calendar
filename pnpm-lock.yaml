@@ -190,15 +190,27 @@ importers:
       '@aws-sdk/client-dynamodb':
         specifier: 3.1146.0
         version: 3.1146.0
+      '@aws-sdk/client-lambda':
+        specifier: 3.1146.0
+        version: 3.1146.0
+      '@aws-sdk/client-sesv2':
+        specifier: 3.1146.0
+        version: 3.1146.0
       '@aws-sdk/lib-dynamodb':
         specifier: 3.1146.0
         version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
+      '@fisio/auth-emulator':
+        specifier: workspace:*
+        version: link:../../tools/local/auth-emulator
       '@fisio/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
       '@fisio/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@fisio/local':
+        specifier: workspace:*
+        version: link:../../tools/local
       '@hono/node-server':
         specifier: ^2.1.5
         version: 2.1.5(hono@4.13.13)
@@ -215,9 +227,6 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
-      '@fisio/auth-emulator':
-        specifier: workspace:*
-        version: link:../../tools/local/auth-emulator
       '@fisio/testkit':
         specifier: workspace:*
         version: link:../../packages/testkit
@@ -306,9 +315,19 @@ importers:
       '@aws-sdk/lib-dynamodb':
         specifier: 3.1146.0
         version: 3.1146.0(@aws-sdk/client-dynamodb@3.1146.0)
+      '@fisio/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@fisio/infra':
         specifier: workspace:*
         version: link:../../infra
+      nodemailer:
+        specifier: ^10.2.1
+        version: 10.2.1
+    devDependencies:
+      '@types/nodemailer':
+        specifier: ^8.0.2
+        version: 8.0.2
 
   tools/local/auth-emulator:
     dependencies:
@@ -393,6 +412,14 @@ packages:
 
   '@aws-sdk/client-dynamodb@3.1146.0':
     resolution: {integrity: sha512-3Mc8YkSu2KlgNNSuspaW+Fo0pTwX+fLYlC5ovH3yX3OoDg2RPtp3Py8KuQJr0FDlQj1tHw0K3+AtaH4NXlI3aQ==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-lambda@3.1146.0':
+    resolution: {integrity: sha512-qCeVHGhkI5aw0Lvexhwuf1H41L2sCm+9C4K+IOUhErY/nx5ioCU0dFyXF4+P4m4Nk23uiTbON7lI7nmlPNncHw==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-sesv2@3.1146.0':
+    resolution: {integrity: sha512-3sMaymLxzaP1Ldqmu8mU4Uj2qLMDl8hHb3WYiM+H2fFHOnpTGVSToB5s15qCb0sAWqbXmFf+0vBLfwazpB8LzA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/core@3.978.5':
@@ -899,6 +926,9 @@ packages:
   '@types/node@22.20.5':
     resolution: {integrity: sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==}
 
+  '@types/nodemailer@8.0.2':
+    resolution: {integrity: sha512-c7M5ox8p0nEOfbJ2E9Qcmt8/QCu/VzsiAhzBiZbvky2PhKZDHpKB3sQHBM5MEZNkCfBOaS6S9//AGPRTNB7IaA==}
+
   '@typescript/typescript-aix-ppc64@7.0.2':
     resolution: {integrity: sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==}
     engines: {node: '>=16.20.0'}
@@ -1173,6 +1203,10 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  nodemailer@10.2.1:
+    resolution: {integrity: sha512-ZrDNsPFoDMwefNs7sJwrYiEJ/CG4ClJWDZv05iNJsEBWa8GRDry1QJHTJxsuTAY9eDDKjX4k+q3SxslXJOao7w==}
+    engines: {node: '>=20.0.0'}
+
   obliterator@1.6.1:
     resolution: {integrity: sha512-9WXswnqINnnhOG/5SLimUlzuU1hFJUc8zkwyD59Sd+dPOMf05PmnYG/d6Q7HZ+KmgkZJa1PxRso6QdM3sTNHig==}
 
@@ -1358,6 +1392,29 @@ snapshots:
       '@aws-sdk/credential-provider-node': 3.972.88
       '@aws-sdk/dynamodb-codec': 3.973.50
       '@aws-sdk/middleware-endpoint-discovery': 3.972.34
+      '@aws-sdk/types': 3.975.0
+      '@smithy/core': 3.36.2
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/node-http-handler': 4.12.1
+      '@smithy/types': 4.19.0
+      tslib: 2.8.1
+
+  '@aws-sdk/client-lambda@3.1146.0':
+    dependencies:
+      '@aws-sdk/core': 3.978.5
+      '@aws-sdk/credential-provider-node': 3.972.88
+      '@aws-sdk/types': 3.975.0
+      '@smithy/core': 3.36.2
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/node-http-handler': 4.12.1
+      '@smithy/types': 4.19.0
+      tslib: 2.8.1
+
+  '@aws-sdk/client-sesv2@3.1146.0':
+    dependencies:
+      '@aws-sdk/core': 3.978.5
+      '@aws-sdk/credential-provider-node': 3.972.88
+      '@aws-sdk/signature-v4-multi-region': 3.996.49
       '@aws-sdk/types': 3.975.0
       '@smithy/core': 3.36.2
       '@smithy/fetch-http-handler': 5.8.0
@@ -1808,6 +1865,10 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/nodemailer@8.0.2':
+    dependencies:
+      '@types/node': 22.20.5
+
   '@typescript/typescript-aix-ppc64@7.0.2':
     optional: true
 
@@ -1995,6 +2056,8 @@ snapshots:
       obliterator: 1.6.1
 
   nanoid@3.3.20: {}
+
+  nodemailer@10.2.1: {}
 
   obliterator@1.6.1: {}
 

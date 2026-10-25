@@ -156,7 +156,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         ? `  password ${credentials.password}\n  TOTP secret ${credentials.totpSecret}\n  ${credentials.otpauthUri}\n  (the enrolment used the current code: sign in with the next one, up to 30 s from now)`
         : '  already set up (the secret was printed by the first seed; `pnpm local:down && pnpm local:up` resets it)',
     );
-    console.log(`Clients (sign in with the one-time code printed by the auth emulator):`);
+    console.log(
+      `Clients (sign in with the one-time code the auth emulator sends to Mailpit, http://localhost:8025):`,
+    );
     for (const client of report.clients) console.log(`  ${client.email} (${client.status})`);
   } catch (error) {
     console.error(`Seed failed: ${String(error)}. Is the local stack running (\`pnpm local:up\`)?`);

@@ -67,7 +67,7 @@ type RefusedStep = Pick<Session, 'email'> & Partial<Session>;
 export interface AuthEmulatorDeps {
   readonly store: EmulatorStore;
   readonly signer: RsaSigner;
-  /** Where one-time codes go: FakeChannel in specs, the console (later Mailpit) locally. */
+  /** Where one-time codes go: FakeChannel in specs, Mailpit (`SmtpEmailChannel`) locally. */
   readonly channel: NotificationChannel;
   readonly clock: Clock;
   readonly config: EmulatorConfig;
@@ -96,8 +96,9 @@ export class AuthEmulator {
   async startEmailOtp(rawEmail: string): Promise<SignInStep> {
     const email = normaliseEmail(rawEmail);
     const user = await this.#store.findUserByEmail(email);
-    const usable =
-      user?.enabled === true && user.role === 'client' && !(await this.#isLocked(email));
+    // Read for every email, so a stranger's answer does the same work as a client's.
+    const locked = await this.#isLocked(email);
+    const usable = user?.enabled === true && user.role === 'client' && !locked;
     const code = numericCode(this.#config.otpDigits);
     const session = await this.#newSession({
       kind: 'email_otp',
@@ -106,8 +107,9 @@ export class AuthEmulator {
     });
     if (usable) {
       const minutes = Math.round(this.#config.otpValiditySeconds / 60);
-      // A failed delivery must not change the answer, or it would tell clients from strangers.
-      await this.#channel
+      // Not awaited, and a failure is only logged: neither the SMTP round trip nor a failed
+      // delivery may change the answer or its timing, or it would tell clients from strangers.
+      void this.#channel
         .send({
           channel: 'email',
           notificationKey: `AUTH_OTP#${session.sessionId}`,

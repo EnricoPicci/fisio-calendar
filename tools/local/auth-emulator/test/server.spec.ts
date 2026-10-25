@@ -1,7 +1,8 @@
+import { SmtpEmailChannel } from '@fisio/local/smtp';
 import { closeTestDocumentClient } from '@fisio/testkit';
 import { afterAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { createEmulatorApp } from '../src/server';
+import { createEmulatorApp, createLocalEmulator } from '../src/server';
 import { emulatorHarness, THERAPIST_PASSWORD } from './harness';
 
 const h = emulatorHarness();
@@ -19,6 +20,19 @@ async function post(path: string, body: unknown) {
   const answer: any = await res.json();
   return { status: res.status, body: answer };
 }
+
+describe('Auth emulator on the local stack (pnpm dev, architecture §11.4)', () => {
+  // Value: protects=on the local stack one-time codes go to Mailpit like every other local email; fails_when=createLocalEmulator falls back to a console or no-op channel; why_new=WP0.6 swaps the console channel for SMTP; seam=none (only the wiring is checked); no_claim=SMTP delivery itself (NotificationChannel contract spec on Mailpit)
+  it('sends one-time codes through SMTP to Mailpit by default', () => {
+    const local = createLocalEmulator();
+    try {
+      expect(local.channel).toBeInstanceOf(SmtpEmailChannel);
+    } finally {
+      if (local.channel instanceof SmtpEmailChannel) local.channel.close();
+      local.doc.destroy();
+    }
+  });
+});
 
 describe('Auth emulator over HTTP (pnpm dev, architecture §11.4)', () => {
   // Value: protects=the API's verifier finds the emulator's keys where it looks for Cognito's; fails_when=the JWKS moves off <issuer>/.well-known/jwks.json or loses its fields; why_new=first server; seam=app.request; no_claim=that the API accepts the tokens (apps/api emulator-tokens spec)
