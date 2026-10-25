@@ -250,11 +250,11 @@
 
 **Why:** OAC signing behaviour `always` overwrites the viewer's `Authorization` header with CloudFront's SigV4 signature. `no-override` passes it unsigned, so the `AWS_IAM` Function URL refuses it, and `always-amz-auth` is valid only for Lambda Web Function origins (AWS docs: "Restrict access to an AWS Lambda function URL origin", `OriginAccessControlConfig.signingBehavior`). As designed (§8.2 bearer in `Authorization`, §9.1 OAC + IAM Function URL), every member and therapist route would answer 401 in `dev`/`prod`, while every local spec passes. It fails closed.
 
-**Context:** Red-team finding in the WP0.4 `/ship` review, verified against the AWS docs. The decision touches `infra/` and the SPA, so it was deferred (CLAUDE.md: ask before changing `infra/`; never widen a WP). Architecture §9.1 carries an open-decision note.
+**Context:** Red-team finding in the WP0.4 `/ship` review, verified against the AWS docs. The decision touches `infra/` and the SPA, so it was deferred (CLAUDE.md: ask before changing `infra/`; never widen a WP). Architecture §9.1 carries an open-decision note. WP0.7 shipped the SPA `ApiClient` with the token in `Authorization` as designed, named once by `AUTHORIZATION_HEADER` in `apps/web/src/services/api-client.ts`, so the SPA side of the decision is a one-constant change (plus the API's cloud read).
 
 **Effort:** S (code) once decided
 **Priority:** P1
-**Depends on:** Must be settled before WP0.9 (CDK `App` stack) and WP0.7 (SPA `ApiClient`).
+**Depends on:** Must be settled before WP0.9 (CDK `App` stack); WP0.7 is done on the local assumption.
 
 ### Email case and id format across Cognito and the auth emulator
 
@@ -537,6 +537,72 @@
 **Depends on:** None.
 
 ## Web app
+
+### Amplify sign-in flows are unverified until the `dev` pool exists
+
+**What:** Run the WP0.10 spike against `AmplifyAuthService` (`apps/web/src/services/amplify-auth-service.ts`): `signIn` with `USER_AUTH`/`EMAIL_OTP` for an `AdminCreateUser` client, `PASSWORD_SRP` then `CONFIRM_SIGN_IN_WITH_TOTP_CODE` for the therapist, the setup link (`PASSWORD` with the temporary password → `NEW_PASSWORD_REQUIRED` → `setUpTOTP` → `verifyTOTPSetup` → `updateMFAPreference`), and the exception names the service maps to `AuthErrorCode` (`CodeMismatchException`, `NotAuthorizedException`, `TooManyRequestsException`, …). Check that the app client has "prevent user existence errors" on, so an unknown email in the code flow does not surface as `UserNotFoundException`.
+
+**Why:** WP0.7 wrote the Amplify service from the documented API (implementation plan §9, spike row WP0.7); only the local service runs in the suite. A wrong step name or exception name shows up as a sign-in that never completes on `dev`.
+
+**Context:** Fallback agreed in the plan: the Cognito SDK (`InitiateAuth`/`RespondToAuthChallenge`) behind the same `AuthService` port. The `restore()`/`refresh()` pair relies on Amplify's own token store and `fetchAuthSession({ forceRefresh })`.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (pool), WP0.10 (spike).
+
+### The sign-in page does not say why a session ended
+
+**What:** Show a notice on the sign-in page when `SessionViewModel.signedOut$` emitted `refresh_refused` (the device was signed out: blocked, global sign-out, refresh token expired), and later the explanation J7 expects after a block. `signedOut$` is a hot stream, so the notice needs a replayed "last reason" the sign-in view-model can read.
+
+**Why:** Today the shell silently swaps the home page for the sign-in page; a client who was signed out by a block sees a blank sign-in form.
+
+**Context:** WP0.7 kept the session streams minimal; the journey J7 (WP0.8) asserts `signedOut$` itself, not the UI.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.8 (J7 defines the explanation).
+
+### TOTP enrolment shows the secret as text, no QR code
+
+**What:** Render the `otpauth://` URI of the setup page as a QR code (a small dependency, or an inline SVG encoder) next to the manual key.
+
+**Why:** Authenticator apps are usually on the phone while the setup link is opened on a laptop; typing a 32-character base32 key by hand is error-prone. The `otpauth://` link works only when the page is opened on the phone itself.
+
+**Context:** `apps/web/src/pages/SetupPage.tsx`, `SetupViewModel.enrolment$`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
+### SPA bundle carries Zod and the domain's date library
+
+**What:** Measure what `@fisio/contracts` (Zod schemas, used by `OpenApiClient` to parse responses) and `@fisio/domain` (date-fns + tz) add to the main chunk (413 kB before gzip after WP0.7, 128 kB gzipped) and decide: keep response parsing with Zod, parse with lighter checks, or split the contracts package so the SPA imports only the types and the strings.
+
+**Why:** Clients open the calendar on phones; the bundle should stay small. The parsing was chosen so a server that drifts from the contract fails at the client boundary.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
+### `openapi-typescript` needs the TypeScript 5 compiler API
+
+**What:** Drop `tools/openapi-types` (the generator package that pins `typescript@5` only for itself) once `openapi-typescript` runs on the TypeScript 7 compiler the repository uses, and move its two lines into `apps/web`.
+
+**Why:** `openapi-typescript` prints its output through `ts.factory`, which the TypeScript 7 npm package does not provide; the pinned copy is the only TypeScript 5 in the workspace.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** Upstream support.
+
+### `useViewModel` and React `StrictMode`
+
+**What:** Make `useViewModel` survive StrictMode's simulated unmount (create the view-model in a ref and re-create it when the effect finds it disposed, or dispose on a debounce), then enable `StrictMode` in `main.tsx` for development.
+
+**Why:** StrictMode's double effect run disposes the page's view-model while it is still rendered, so WP0.7 left it off and the usual StrictMode checks (impure renders, missing cleanups) do not run.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
 
 ### Installable PWA
 

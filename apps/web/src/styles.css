@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+/* Mobile-first (docs/architecture.md §7.2): one column, large touch targets, no custom theme
+   yet. Component classes are composed in the templates; this file holds only the import and
+   the few base rules every page shares. */
+@layer base {
+  html {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  input,
+  button {
+    font: inherit;
+  }
+}

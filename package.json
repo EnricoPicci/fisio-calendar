@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --parallel --aggregate-output typecheck",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
-    "openapi": "tsx apps/api/src/openapi.ts",
+    "openapi": "tsx apps/api/src/openapi.ts && node tools/openapi-types/generate.mjs",
     "local:up": "docker compose -f tools/local/docker-compose.yml up -d --wait && node tools/local/src/create-table.ts local",
     "local:down": "docker compose -f tools/local/docker-compose.yml down",
     "dev": "node tools/scripts/dev.mjs",
