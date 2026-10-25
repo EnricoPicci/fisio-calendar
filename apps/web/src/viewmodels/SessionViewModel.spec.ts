@@ -105,14 +105,66 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
     expect(auth.signOut).toHaveBeenCalledTimes(1);
   });
 
-  it('a refresh refused for a passing reason (a lockout) fails this request only and keeps the session', () => {
+  it('a refresh refused for a passing reason (a lockout) fails this request with that reason and keeps the session', () => {
     scheduler.run(({ cold, expectObservable }) => {
-      auth.refresh.mockReturnValue(cold('--#', undefined, new AuthError('too_many_attempts')));
+      const lockout = new AuthError('too_many_attempts');
+      auth.refresh.mockReturnValue(cold('--#', undefined, lockout));
       vm.start(expired);
-      expectObservable(vm.accessToken$).toBe('--(n|)', { n: null });
+      expectObservable(vm.accessToken$).toBe('--#', undefined, lockout);
       expectObservable(vm.signedOut$).toBe('----');
       expectObservable(vm.page$).toBe('c', { c: 'client' });
     });
+  });
+
+  it('a refresh refused after signOut() does not end the session twice', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.refresh.mockReturnValue(cold('----#', undefined, new AuthError('not_authorized')));
+      auth.signOut.mockReturnValue(cold('-a|', { a: undefined }));
+      vm.start(expired);
+      expectObservable(vm.accessToken$).toBe('----(n|)', { n: null });
+      scheduler.schedule(() => void vm.signOut(), 1);
+      expectObservable(vm.signedOut$).toBe('---u', { u: 'user' });
+      expectObservable(vm.page$).toBe('c--s', { c: 'client', s: 'signIn' });
+    });
+    expect(auth.signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('a roleless refresh that lands after a new sign-in neither ends it nor signs the provider out', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.refresh.mockReturnValue(cold('----r|', { r: roleless }));
+      vm.start(expired);
+      expectObservable(vm.accessToken$).toBe('----n|', { n: null });
+      scheduler.schedule(() => vm.start(therapist), 1);
+      expectObservable(vm.page$).toBe('ct', { c: 'client', t: 'therapist' });
+      expectObservable(vm.signedOut$).toBe('------');
+    });
+    expect(auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it('dispose() during a refresh completes accessToken$; the late answer is dropped without a throw', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.refresh.mockReturnValue(cold('----r|', { r: fresh }));
+      vm.start(expired);
+      expectObservable(vm.accessToken$).toBe('--|');
+      scheduler.schedule(() => vm.dispose(), 2);
+    });
+    expect(auth.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['exactly at the skew', REFRESH_SKEW_SECONDS, true],
+    ['one second past the skew', REFRESH_SKEW_SECONDS + 1, false],
+  ])('a token expiring %s is refreshed before use: %s', (_label, seconds, refreshes) => {
+    scheduler.run(({ cold, expectObservable }) => {
+      const tokens = fakeTokens('client', nowSeconds + seconds);
+      auth.refresh.mockReturnValue(cold('-r|', { r: fresh }));
+      vm.start(tokens);
+      expectObservable(vm.accessToken$).toBe(refreshes ? '-r|' : '(a|)', {
+        r: fresh.accessToken,
+        a: tokens.accessToken,
+      });
+    });
+    expect(auth.refresh).toHaveBeenCalledTimes(refreshes ? 1 : 0);
   });
 
   it('a refresh that fails for a network error keeps the session and errors the request as offline', () => {
@@ -206,6 +258,35 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
     expect(() => vm.start(roleless)).toThrow(/role/);
     expect(auth.signOut).toHaveBeenCalledTimes(1);
   });
+
+  it('start() refusing tokens while a session is live ends that session too: the provider now holds the refused ones', () => {
+    const reasons: string[] = [];
+    vm.signedOut$.subscribe((reason) => reasons.push(reason));
+    vm.start(valid);
+    expect(() => vm.start(roleless)).toThrow(/role/);
+    scheduler.run(({ expectObservable }) => {
+      expectObservable(vm.page$).toBe('s', { s: 'signIn' });
+    });
+    expect(reasons).toEqual(['refresh_refused']);
+    expect(auth.signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['tokens with a known role', () => valid],
+    ['tokens without a known role', () => roleless],
+  ])(
+    'a restore() answering %s after a sign-in completed leaves the new session and its provider tokens alone',
+    (_label, tokens) => {
+      scheduler.run(({ cold, expectObservable }) => {
+        auth.restore.mockReturnValue(cold('---t|', { t: tokens() }));
+        void vm.restore();
+        scheduler.schedule(() => vm.start(therapist), 1);
+        expectObservable(vm.page$).toBe('lt', { l: 'loading', t: 'therapist' });
+        expectObservable(vm.signedOut$).toBe('-----');
+      });
+      expect(auth.signOut).not.toHaveBeenCalled();
+    },
+  );
 
   it('restore() treats tokens without a known role as nobody and signs the provider out', () => {
     scheduler.run(({ cold, expectObservable }) => {

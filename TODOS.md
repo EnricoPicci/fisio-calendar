@@ -432,9 +432,9 @@
 
 **What:** Pin the app client's refresh-token rotation grace period (`RetryGracePeriodSeconds`) in WP0.9. Then either give the emulator the same window, with a contract row ("a refresh token reused within the grace period succeeds once"), or have the SPA serialise refreshes across tabs (a Web Lock or BroadcastChannel) and cover that with a journey.
 
-**Why:** The emulator spends a refresh token on first use. Two tabs, or a retry after a timeout, that refresh with the same token sign the user out locally, while Cognito with a grace period would accept both. The SPA's refresh handling would be built against the stricter rule.
+**Why:** The emulator spends a refresh token on first use. Two tabs, or a retry after a timeout, that refresh with the same token sign the user out locally, while Cognito with a grace period would accept both. The SPA's refresh handling would be built against the stricter rule. On the Amplify side the stakes are higher: Amplify's token orchestrator treats `RefreshTokenReuseException` as an authentication error and clears its token store (shared by every tab through `localStorage`), so with rotation on, the losing tab's refresh wipes the winning tab's pair and the device is signed out at the next reload. The local service's spent-marker protocol has no Amplify counterpart, so a cross-tab serialisation (a Web Lock around `refresh()`) or no rotation is a prerequisite of enabling rotation, not an option.
 
-**Context:** Red-team finding in the WP0.5 `/review`.
+**Context:** Red-team finding in the WP0.5 `/review`; the Amplify `clearTokens` behaviour is an adversarial finding of the WP0.7 ship review.
 
 **Effort:** S
 **Priority:** P3
@@ -540,7 +540,7 @@
 
 ### Amplify sign-in flows are unverified until the `dev` pool exists
 
-**What:** Run the WP0.10 spike against `AmplifyAuthService` (`apps/web/src/services/amplify-auth-service.ts`): `signIn` with `USER_AUTH`/`EMAIL_OTP` for an `AdminCreateUser` client, `PASSWORD_SRP` then `CONFIRM_SIGN_IN_WITH_TOTP_CODE` for the therapist, the setup link (`PASSWORD` with the temporary password → `NEW_PASSWORD_REQUIRED` → `setUpTOTP` → `verifyTOTPSetup` → `updateMFAPreference`), and the exception names the service maps (`CodeMismatchException`, `NotAuthorizedException`, `TooManyRequestsException`, `TokenRevokedException`, `RefreshTokenReuseException`, `UserLambdaValidationException`, Amplify's own `NetworkError`, and `UserAlreadyAuthenticatedException`, which the service answers with a sign-out and one retry). Check that the app client has "prevent user existence errors" on, so an unknown email in the code flow does not surface as `UserNotFoundException`, and that `fetchAuthSession()` on an expired access token while offline rejects the way the service expects (the session then shows the sign-in page and the next sign-in attempt recovers through the retry).
+**What:** Run the WP0.10 spike against `AmplifyAuthService` (`apps/web/src/services/amplify-auth-service.ts`): `signIn` with `USER_AUTH`/`EMAIL_OTP` for an `AdminCreateUser` client, `PASSWORD_SRP` then `CONFIRM_SIGN_IN_WITH_TOTP_CODE` for the therapist, the setup link (`PASSWORD` with the temporary password → `NEW_PASSWORD_REQUIRED` → `setUpTOTP` → `verifyTOTPSetup` → `updateMFAPreference`), and the exception names the service maps (`CodeMismatchException`, `NotAuthorizedException`, `TooManyRequestsException`, `TokenRevokedException`, `RefreshTokenReuseException`, `UserLambdaValidationException`, Amplify's own `NetworkError`, and `UserAlreadyAuthenticatedException`, which the service answers with a sign-out and one retry). Check that the app client has "prevent user existence errors" on, so an unknown email in the code flow does not surface as `UserNotFoundException`, and that `fetchAuthSession()` on an expired access token while offline rejects the way the service expects (the session then shows the sign-in page and the next sign-in attempt recovers through the retry). Check too that the pool does not require MFA at pool level: `startSetup()` expects `confirmSignIn` with the new password to complete the sign-in (`isSignedIn`), then enrols with `setUpTOTP`; a pool that answers `CONTINUE_SIGN_IN_WITH_TOTP_SETUP` instead would read as a used link (`not_authorized`) after the temporary password was spent.
 
 **Why:** WP0.7 wrote the Amplify service from the documented API (implementation plan §9, spike row WP0.7); only the local service runs in the suite. A wrong step name or exception name shows up as a sign-in that never completes on `dev`.
 
@@ -561,6 +561,18 @@
 **Effort:** S
 **Priority:** P2
 **Depends on:** WP0.8 (J7).
+
+### An offline app start on the cloud build shows the sign-in page instead of waiting
+
+**What:** Let `SessionViewModel.restore()` tell a `NetworkError` from "nobody signed in": keep `page$` on `loading` with an offline notice and a retry (or re-run `restore()` on the `online` event) instead of showing the sign-in page while a valid refresh token sits in Amplify's store.
+
+**Why:** Amplify's `fetchAuthSession()` rejects when the cached access token is expired and the refresh cannot reach Cognito (network error); `restore()` swallows every failure as nobody (`console.warn` only) and runs once, so a client opening the app without signal more than an hour after the last use sees the sign-in page and has no way back but a reload with signal. The local service restores from storage without a request, so the suite never shows it.
+
+**Context:** Adversarial finding of the WP0.7 ship review. Related: the 401 and clock-skew entry above.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9 (pool), WP0.10 (spike).
 
 ### A therapist with a password but no TOTP cannot finish the enrolment from the SPA
 

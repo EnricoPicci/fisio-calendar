@@ -88,6 +88,17 @@ describe('Setup page binding (architecture §11.5, §7.1 templates)', () => {
     expect(await screen.findByText('home')).toBeTruthy();
   });
 
+  it('no authenticator link when the view-model dropped the URI; the secret is still shown', async () => {
+    const auth = fakeAuth();
+    auth.startSetup.mockReturnValue(of({ secret: TOTP_KEY, otpauthUri: 'javascript:alert(1)' }));
+    renderSetup(auth);
+
+    submit(screen.getByLabelText(strings.setup.passwordLabel), 'password-of-twelve');
+
+    expect(await screen.findByText(TOTP_KEY)).toBeTruthy();
+    expect(screen.queryByRole('link', { name: strings.setup.openAuthenticator })).toBeNull();
+  });
+
   it('shows error$ as an alert (a link without a code is refused before any request)', async () => {
     const auth = fakeAuth();
     renderSetup(auth, '/setup#email=only');

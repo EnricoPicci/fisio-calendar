@@ -29,6 +29,11 @@ describe('Build-time configuration (architecture §7.1: AuthService selected at 
     expect(() => readConfig({ VITE_AUTH: 'amplify' } as ImportMetaEnv)).toThrow(/VITE_COGNITO/);
   });
 
+  it('a production build without VITE_AUTH is refused instead of defaulting to the loopback emulator', () => {
+    expect(() => readConfig({ PROD: true } as ImportMetaEnv)).toThrow(/VITE_AUTH/);
+    expect(readConfig({ PROD: true, VITE_AUTH: 'local' } as ImportMetaEnv).auth.mode).toBe('local');
+  });
+
   it('an unknown mode is refused', () => {
     expect(() => readConfig({ VITE_AUTH: 'cognito' } as unknown as ImportMetaEnv)).toThrow(
       /VITE_AUTH/,

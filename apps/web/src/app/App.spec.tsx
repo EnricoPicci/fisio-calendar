@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { type MeResponse, stringsIt as strings } from '@fisio/contracts';
+import { ClientIdSchema, type MeResponse, stringsIt as strings } from '@fisio/contracts';
 import { FixedClock } from '@fisio/domain';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { of, Subject } from 'rxjs';
@@ -25,6 +25,13 @@ import { DepsProvider } from './deps';
 const therapistMe: MeResponse = {
   role: 'therapist',
   therapistId: '0f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c',
+};
+const clientMe: MeResponse = {
+  role: 'client',
+  clientId: ClientIdSchema.parse('6f1d2c3b-4a5e-4f60-8b7c-9d0e1f2a3b4c'),
+  name: 'Giulia Bianchi',
+  email: 'giulia.bianchi@fisio.test',
+  locale: 'it',
 };
 
 afterEach(() => cleanup());
@@ -59,5 +66,26 @@ describe('App shell: the page the session names (architecture §7.2)', () => {
     expect(await screen.findByText(strings.home.greetingTherapist)).toBeTruthy();
     expect(screen.getByText(strings.home.therapist.title)).toBeTruthy();
     expect(screen.queryByLabelText(strings.auth.emailLabel)).toBeNull();
+  });
+
+  it('the client home after a client sign-in', async () => {
+    const auth = fakeAuth();
+    const api = fakeApi();
+    api.me.mockReturnValue(of(clientMe));
+    auth.restore.mockReturnValue(of(null));
+    const session = new SessionViewModel(auth, new FixedClock('2027-03-01T08:00:00.000Z'));
+    render(
+      <DepsProvider
+        deps={{ api, auth, session, strings, clock: new FixedClock('2027-03-01T08:00:00Z') }}
+      >
+        <App />
+      </DepsProvider>,
+    );
+    await act(() => session.restore());
+
+    act(() => session.start(fakeTokens('client', 1_800_000_000)));
+
+    expect(await screen.findByText(strings.home.client.bookingsTitle)).toBeTruthy();
+    expect(screen.queryByText(strings.home.therapist.title)).toBeNull();
   });
 });

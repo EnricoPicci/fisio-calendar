@@ -183,6 +183,64 @@ describe('AmplifyAuthService invariants (architecture §8.1, §15)', () => {
     expect(amplify.updateMFAPreference).toHaveBeenCalledWith({ totp: 'PREFERRED' });
   });
 
+  it('verifyTotpSetup(): a refused first code is code_mismatch; TOTP is not made preferred and the session stays for a retry', async () => {
+    amplify.verifyTOTPSetup.mockRejectedValueOnce(exception('EnableSoftwareTokenMFAException'));
+    await expect(refused(firstValueFrom(service.verifyTotpSetup('000000')))).resolves.toBe(
+      'code_mismatch',
+    );
+    expect(amplify.updateMFAPreference).not.toHaveBeenCalled();
+    expect(amplify.fetchAuthSession).not.toHaveBeenCalled();
+    expect(amplify.signOut).not.toHaveBeenCalled();
+  });
+
+  it('verifyTotpSetup(): a refusal that ends the enrolment (a lockout) signs the single-factor session out', async () => {
+    amplify.verifyTOTPSetup.mockRejectedValueOnce(exception('TooManyRequestsException'));
+    await expect(refused(firstValueFrom(service.verifyTotpSetup('000000')))).resolves.toBe(
+      'too_many_attempts',
+    );
+    expect(amplify.signOut).toHaveBeenCalledTimes(1);
+    expect(amplify.updateMFAPreference).not.toHaveBeenCalled();
+  });
+
+  it('verifyTotpSetup(): a network failure after the code was verified reads as offline, issues no tokens and keeps the session', async () => {
+    amplify.verifyTOTPSetup.mockResolvedValueOnce(undefined);
+    amplify.updateMFAPreference.mockRejectedValueOnce(exception('NetworkError'));
+    await expect(
+      refused(firstValueFrom(service.verifyTotpSetup('123456'))),
+    ).resolves.toBeInstanceOf(NetworkError);
+    expect(amplify.fetchAuthSession).not.toHaveBeenCalled();
+    expect(amplify.signOut).not.toHaveBeenCalled();
+  });
+
+  it('restore(): nobody signed in is null without a Cognito call', async () => {
+    amplify.fetchAuthSession.mockResolvedValueOnce({ tokens: undefined });
+    await expect(firstValueFrom(service.restore())).resolves.toBeNull();
+    expect(amplify.fetchMFAPreference).not.toHaveBeenCalled();
+    expect(amplify.signOut).not.toHaveBeenCalled();
+  });
+
+  it('a completed sign-in that hands out no tokens is not_authorized', async () => {
+    amplify.confirmSignIn.mockResolvedValueOnce({
+      isSignedIn: true,
+      nextStep: { signInStep: 'DONE' },
+    });
+    amplify.fetchAuthSession.mockResolvedValueOnce({ tokens: undefined });
+    await expect(refused(firstValueFrom(service.confirmCode('12345678')))).resolves.toBe(
+      'not_authorized',
+    );
+  });
+
+  it('requestCode(): a sign-in Cognito completes without the code step is refused and signed out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    amplify.signIn.mockResolvedValueOnce({ isSignedIn: true, nextStep: { signInStep: 'DONE' } });
+    await expect(firstValueFrom(service.requestCode('t@example.it'))).resolves.toBeUndefined();
+    expect(amplify.signOut).toHaveBeenCalledTimes(1);
+    await expect(refused(firstValueFrom(service.confirmCode('12345678')))).resolves.toBe(
+      'code_mismatch',
+    );
+    warn.mockRestore();
+  });
+
   it('restore(): a therapist session without TOTP enabled is signed out and not restored', async () => {
     amplify.fetchAuthSession.mockResolvedValueOnce(session('therapist'));
     amplify.fetchMFAPreference.mockResolvedValueOnce(noTotp);
@@ -306,13 +364,17 @@ describe('AmplifyAuthService invariants (architecture §8.1, §15)', () => {
     expect(amplify.signOut).toHaveBeenCalledTimes(1);
   });
 
-  it('the TOTP check runs once per token pair: a second restore() of the same tokens asks Cognito nothing', async () => {
+  it('the TOTP check runs once per token pair: a second restore() of the same tokens asks Cognito nothing; a sign-out forgets the answer', async () => {
     amplify.fetchAuthSession.mockResolvedValue(session('therapist'));
-    amplify.fetchMFAPreference.mockResolvedValueOnce(totp);
+    amplify.fetchMFAPreference.mockResolvedValue(totp);
     await firstValueFrom(service.restore());
     await firstValueFrom(service.restore());
     await firstValueFrom(service.refresh());
     expect(amplify.fetchMFAPreference).toHaveBeenCalledTimes(1);
+
+    await firstValueFrom(service.signOut());
+    await firstValueFrom(service.restore());
+    expect(amplify.fetchMFAPreference).toHaveBeenCalledTimes(2);
   });
 
   it('requestCode(): a sign-in Cognito answers with another challenge reads as refused; the code step then fails as a wrong code without a round trip', async () => {
@@ -326,7 +388,8 @@ describe('AmplifyAuthService invariants (architecture §8.1, §15)', () => {
       'code_mismatch',
     );
     expect(amplify.confirmSignIn).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledTimes(1);
+    // The trace names no reason: the console is one more channel to the person at the keyboard.
+    expect(warn.mock.calls).toEqual([['[auth] code request refused']]);
     warn.mockRestore();
   });
 

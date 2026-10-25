@@ -46,30 +46,36 @@ function renderHome(Page: () => React.JSX.Element, api: FakeApiClient) {
 
 afterEach(() => cleanup());
 
-describe('Home page binding (architecture §7.2 placeholders, §10.1)', () => {
-  it('client: the heading follows welcome$ and the sign-out button calls session.signOut()', async () => {
-    const api = fakeApi();
-    api.me.mockReturnValue(of(giulia));
-    const { signOut } = renderHome(ClientHomePage, api);
+describe.each([
+  ['client', ClientHomePage, strings.home.client.noBookings],
+  ['therapist', TherapistHomePage, strings.home.therapist.soon],
+] as const)(
+  '%s home page binding (architecture §7.2 placeholders, §10.1)',
+  (_role, Page, placeholder) => {
+    it('the heading follows welcome$, the placeholder is shown, the sign-out button calls session.signOut()', async () => {
+      const api = fakeApi();
+      api.me.mockReturnValue(of(giulia));
+      const { signOut } = renderHome(Page, api);
 
-    expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe(
-      `${strings.home.greeting}, ${giulia.name}`,
-    );
-    expect(screen.getByText(strings.home.client.noBookings)).toBeTruthy();
-    expect(screen.queryByRole('alert')).toBeNull();
+      expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe(
+        `${strings.home.greeting}, ${giulia.name}`,
+      );
+      expect(screen.getByText(placeholder)).toBeTruthy();
+      expect(screen.queryByRole('alert')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: strings.common.signOut }));
+      fireEvent.click(screen.getByRole('button', { name: strings.common.signOut }));
 
-    expect(signOut).toHaveBeenCalledTimes(1);
-  });
+      expect(signOut).toHaveBeenCalledTimes(1);
+    });
 
-  it('therapist: a refused GET /me shows error$ as the alert; the heading falls back to the plain greeting', async () => {
-    const api = fakeApi();
-    api.me.mockReturnValue(throwError(() => new ApiError('forbidden', 403)));
-    renderHome(TherapistHomePage, api);
+    it('a refused GET /me shows error$ as the alert; the heading falls back to the plain greeting', async () => {
+      const api = fakeApi();
+      api.me.mockReturnValue(throwError(() => new ApiError('forbidden', 403)));
+      renderHome(Page, api);
 
-    expect((await screen.findByRole('alert')).textContent).toBe(strings.errors.forbidden);
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(strings.home.greeting);
-    expect(screen.getByText(strings.home.therapist.soon)).toBeTruthy();
-  });
-});
+      expect((await screen.findByRole('alert')).textContent).toBe(strings.errors.forbidden);
+      expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(strings.home.greeting);
+      expect(screen.getByText(placeholder)).toBeTruthy();
+    });
+  },
+);

@@ -36,7 +36,8 @@ export abstract class FormViewModel extends ViewModel {
     onValue: (value: T) => void,
     onRefused?: (code: AuthErrorCode) => string | undefined,
   ): Promise<void> {
-    if (this.busy.value) return Promise.resolve();
+    // A page that is gone runs no effect; a form already busy ignores the second submit.
+    if (this.isDisposed() || this.busy.value) return Promise.resolve();
     this.busy.next(true);
     this.error.next(null);
     const fail = (error: unknown) => {

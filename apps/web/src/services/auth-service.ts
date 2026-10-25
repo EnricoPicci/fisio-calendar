@@ -13,7 +13,11 @@ import type { Observable } from 'rxjs';
  * app start, `refresh()` when the session asks for a new access token.
  */
 export interface AuthService {
-  /** Client flow, step one: `USER_AUTH` / `EMAIL_OTP`. Always succeeds (no account enumeration). */
+  /**
+   * Client flow, step one: `USER_AUTH` / `EMAIL_OTP`. Succeeds for any address, known or not (no
+   * account enumeration); the one refusal is `too_many_attempts` for a locked account, which
+   * Cognito raises at this step and the emulator at the code step.
+   */
   requestCode(email: string): Observable<void>;
   /** Client flow, step two: the 8-digit code from the email. */
   confirmCode(code: string): Observable<AuthTokens>;

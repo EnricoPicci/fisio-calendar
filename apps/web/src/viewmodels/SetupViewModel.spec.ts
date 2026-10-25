@@ -91,6 +91,19 @@ describe('T1 Therapist setup link: password, then TOTP enrolment (architecture Â
     });
   });
 
+  it.each(['too_many_attempts', 'code_mismatch', 'invalid_session', 'code_expired'] as const)(
+    'any other refusal at the password step (%s) keeps the form with its own sentence; no enrolment starts',
+    (code) => {
+      scheduler.run(({ cold, expectObservable }) => {
+        auth.startSetup.mockReturnValue(cold('-#', undefined, new AuthError(code)));
+        void vm.startSetup(LINK, PASSWORD);
+        expectObservable(vm.error$).toBe('ne', { n: null, e: strings.auth.errors[code] });
+        expectObservable(vm.step$).toBe('p', { p: 'password' });
+        expectObservable(vm.enrolment$).toBe('n', { n: null });
+      });
+    },
+  );
+
   it('verifyTotp(): the first authenticator code finishes the setup and starts the session', () => {
     scheduler.run(({ cold, expectObservable }) => {
       atTotpStep();

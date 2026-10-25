@@ -12,7 +12,7 @@ import {
 import { firstValueFrom } from 'rxjs';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { AuthError } from './auth-service';
-import { isSpentMarker, LOCAL_TOKENS_KEY, LocalAuthService } from './local-auth-service';
+import { LOCAL_TOKENS_KEY, LocalAuthService } from './local-auth-service';
 import { NetworkError } from './network-error';
 import { MemoryStorage } from './storage';
 
@@ -318,14 +318,77 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
     expect(storage.get(LOCAL_TOKENS_KEY)).toBeNull();
   });
 
-  it('a refused refresh leaves a spent marker, which restore() reads as nobody', async () => {
+  it('a refused refresh leaves a spent marker naming the dead token, which restore() reads as nobody', async () => {
     const { anna, auth, storage } = await signedInClient();
+    const before = JSON.parse(storage.get(LOCAL_TOKENS_KEY) ?? '{}') as { refreshToken: string };
     await t.identity.globalSignOut(anna.userId);
 
     await expect(refused(firstValueFrom(auth.refresh()))).resolves.toBe('not_authorized');
 
-    expect(isSpentMarker(storage.get(LOCAL_TOKENS_KEY))).toBe(true);
+    expect(JSON.parse(storage.get(LOCAL_TOKENS_KEY) ?? '')).toEqual({ spent: before.refreshToken });
     await expect(firstValueFrom(auth.restore())).resolves.toBeNull();
+  });
+
+  it('two tabs refreshing a revoked pair: both refused, the marker stays, restore() is nobody', async () => {
+    const { anna, auth: tabA, storage } = await signedInClient();
+    const tabB = new LocalAuthService({ issuer: t.config.issuer, fetch, storage });
+    await t.identity.globalSignOut(anna.userId);
+
+    await expect(refused(firstValueFrom(tabA.refresh()))).resolves.toBe('not_authorized');
+    await expect(refused(firstValueFrom(tabB.refresh()))).resolves.toBe('not_authorized');
+
+    expect(JSON.parse(storage.get(LOCAL_TOKENS_KEY) ?? '')).toHaveProperty('spent');
+    await expect(firstValueFrom(tabB.restore())).resolves.toBeNull();
+  });
+
+  it('a refresh that wins after the losing tab left its spent marker keeps the rotated pair', async () => {
+    const { auth: tabA, storage, tokens: first } = await signedInClient();
+    clock.advance({ minutes: 1 });
+    // The losing tab finished first: refused, it replaced the pair with the marker before this
+    // tab's answer arrived.
+    const loserFirst: typeof globalThis.fetch = async (...args) => {
+      const response = await fetch(...args);
+      storage.set(LOCAL_TOKENS_KEY, JSON.stringify({ spent: 'the-refresh-token-both-tabs-used' }));
+      return response;
+    };
+    const winner = new LocalAuthService({ issuer: t.config.issuer, fetch: loserFirst, storage });
+
+    const kept = await firstValueFrom(winner.refresh());
+
+    expect(kept.accessToken).not.toBe(first.accessToken);
+    expect(storage.get(LOCAL_TOKENS_KEY)).toContain(kept.accessToken);
+    await expect(firstValueFrom(tabA.restore())).resolves.toEqual(kept);
+    await expect(firstValueFrom(tabA.refresh())).resolves.toMatchObject({
+      accessToken: expect.any(String),
+    });
+  });
+
+  it('a refresh that lands after another tab rotated the pair adopts the stored pair and writes nothing', async () => {
+    const { auth: tabA, storage } = await signedInClient();
+    clock.advance({ minutes: 1 });
+    // The other tab's rotation landed first: its pair is in storage when this answer arrives.
+    const rotatedMeanwhile = JSON.stringify({
+      accessToken: 'other-tab-access',
+      idToken: 'other-tab-id',
+      refreshToken: 'other-tab-refresh',
+    });
+    const otherFirst: typeof globalThis.fetch = async (...args) => {
+      const response = await fetch(...args);
+      storage.set(LOCAL_TOKENS_KEY, rotatedMeanwhile);
+      return response;
+    };
+    const late = new LocalAuthService({ issuer: t.config.issuer, fetch: otherFirst, storage });
+
+    await expect(firstValueFrom(late.refresh())).resolves.toEqual({
+      accessToken: 'other-tab-access',
+      idToken: 'other-tab-id',
+    });
+
+    expect(storage.get(LOCAL_TOKENS_KEY)).toBe(rotatedMeanwhile);
+    await expect(firstValueFrom(tabA.restore())).resolves.toEqual({
+      accessToken: 'other-tab-access',
+      idToken: 'other-tab-id',
+    });
   });
 
   it('setup link: five wrong first codes lock the enrolment; the session is gone afterwards', async () => {
@@ -353,6 +416,7 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
     '{}',
     '"str"',
     '{"accessToken":"","idToken":"b","refreshToken":"c"}',
+    '{"spent":"a-refresh-token-the-emulator-refused"}',
   ])(
     'corrupt storage %j: restore() is nobody and refresh() is not_authorized without a request',
     async (raw) => {

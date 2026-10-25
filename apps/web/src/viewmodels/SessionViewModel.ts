@@ -93,7 +93,10 @@ export class SessionViewModel extends ViewModel implements SessionSink {
   start(tokens: AuthTokens): void {
     const accepted = accept(tokens);
     if (!accepted) {
+      // The provider replaced its tokens with these: it is signed out, and a session that was
+      // live on this device (a setup completed while signed in) ends with it.
       this.#forgetAtProvider();
+      if (this.#tokens.value) this.#end('refresh_refused');
       throw new Error('The access token names no role the app knows');
     }
     this.#generation += 1;
@@ -107,7 +110,10 @@ export class SessionViewModel extends ViewModel implements SessionSink {
     const current = () => generation === this.#generation;
     return this.#run(
       this.#auth.restore().pipe(
-        catchError(() => of(null)),
+        catchError((error: unknown) => {
+          console.warn('[session] restore failed: nobody is signed in', error);
+          return of(null);
+        }),
         tap({
           next: (tokens) => {
             // A sign-in that completed meanwhile owns the session.
@@ -128,7 +134,10 @@ export class SessionViewModel extends ViewModel implements SessionSink {
   signOut(): Promise<void> {
     return this.#run(
       this.#auth.signOut().pipe(
-        catchError(() => of(undefined)),
+        catchError((error: unknown) => {
+          console.warn('[session] the provider could not be told of the sign-out', error);
+          return of(undefined);
+        }),
         tap({ complete: () => this.#end('user') }),
       ),
     );
@@ -168,7 +177,9 @@ export class SessionViewModel extends ViewModel implements SessionSink {
       }),
       catchError((error: unknown) => {
         if (!(error instanceof AuthError)) return throwError(() => error);
-        if (current() && ENDING_REFUSALS.has(error.code)) this.#end('refresh_refused');
+        // A passing refusal (a lockout) is the request's failure, with its own sentence.
+        if (!ENDING_REFUSALS.has(error.code)) return throwError(() => error);
+        if (current()) this.#end('refresh_refused');
         return of(null);
       }),
       finalize(() => {
@@ -192,7 +203,12 @@ export class SessionViewModel extends ViewModel implements SessionSink {
     this.own(
       this.#auth
         .signOut()
-        .pipe(catchError(() => of(undefined)))
+        .pipe(
+          catchError((error: unknown) => {
+            console.warn('[session] the provider could not be told to forget its tokens', error);
+            return of(undefined);
+          }),
+        )
         .subscribe(),
     );
   }

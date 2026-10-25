@@ -30,7 +30,7 @@ describe('Home page: who is signed in, from GET /me (architecture §7.2, WP0.7 p
     scheduler.run(({ cold, expectObservable }) => {
       api.me.mockReturnValue(cold('--m|', { m: client }));
       const vm = new HomeViewModel(api, strings);
-      expectObservable(vm.welcome$).toBe('--w|', { w: 'Ciao, Giulia Bianchi' });
+      expectObservable(vm.welcome$).toBe('--w|', { w: `${strings.home.greeting}, ${client.name}` });
       expectObservable(vm.error$).toBe('n', { n: null });
     });
   });
@@ -47,8 +47,10 @@ describe('Home page: who is signed in, from GET /me (architecture §7.2, WP0.7 p
     scheduler.run(({ cold, expectObservable }) => {
       api.me.mockReturnValue(cold('--m|', { m: client }));
       const vm = new HomeViewModel(api, strings);
-      expectObservable(vm.welcome$).toBe('--w|', { w: 'Ciao, Giulia Bianchi' });
-      expectObservable(vm.welcome$, '-^').toBe('--w|', { w: 'Ciao, Giulia Bianchi' });
+      expectObservable(vm.welcome$).toBe('--w|', { w: `${strings.home.greeting}, ${client.name}` });
+      expectObservable(vm.welcome$, '-^').toBe('--w|', {
+        w: `${strings.home.greeting}, ${client.name}`,
+      });
     });
     expect(api.me).toHaveBeenCalledTimes(1);
   });

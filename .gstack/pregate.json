@@ -179,7 +179,7 @@
     "apps/web/tsconfig.spec.json": [],
     "apps/web/src/styles.css": [],
     "apps/web/src/main.tsx": [],
-    "apps/web/src/app/App.tsx": [],
+    "apps/web/src/app/App.tsx": ["apps/web/src/app/App.spec.tsx"],
     "apps/web/src/pages/LoadingPage.tsx": [],
     "apps/web/src/pages/ClientHomePage.tsx": ["apps/web/src/viewmodels/HomeViewModel.spec.ts"],
     "apps/web/src/pages/TherapistHomePage.tsx": ["apps/web/src/viewmodels/HomeViewModel.spec.ts"],

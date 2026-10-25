@@ -65,8 +65,8 @@ export function configureAmplify(config: AmplifyAuthConfig): void {
 export class AmplifyAuthService implements AuthService {
   /** True when the last `requestCode()` was refused by Cognito: no sign-in is in progress. */
   #codeRefused = false;
-  /** Access tokens whose therapist has TOTP enabled: one `fetchMFAPreference` per token pair. */
-  readonly #enrolled = new Set<string>();
+  /** The access token whose therapist has TOTP enabled: one `fetchMFAPreference` per token pair. */
+  #enrolledToken: string | undefined;
 
   requestCode(email: string): Observable<void> {
     return effect(async () => {
@@ -79,14 +79,17 @@ export class AmplifyAuthService implements AuthService {
           }),
         );
         if (step.nextStep.signInStep !== 'CONFIRM_SIGN_IN_WITH_EMAIL_CODE') {
+          // A sign-in Cognito completed without the code step must not stay with Amplify.
+          if (step.isSignedIn) await signOut().catch(() => undefined);
           throw new AuthError('not_authorized');
         }
       } catch (error) {
         const mapped = mapAmplifyError(error);
         if (!(mapped instanceof AuthError)) throw error;
-        // A lockout is worth telling; any other refusal answers like a client's address.
+        // A lockout is worth telling; any other refusal answers like a client's address, and
+        // the reason is not logged either: the console is one more channel to the same person.
         if (mapped.code === 'too_many_attempts') throw mapped;
-        console.warn('[auth] code request refused', mapped.code);
+        console.warn('[auth] code request refused');
         this.#codeRefused = true;
       }
     });
@@ -151,8 +154,19 @@ export class AmplifyAuthService implements AuthService {
 
   verifyTotpSetup(code: string): Observable<AuthTokens> {
     return effect(async () => {
-      await verifyTOTPSetup({ code });
-      await updateMFAPreference({ totp: 'PREFERRED' });
+      try {
+        await verifyTOTPSetup({ code });
+        await updateMFAPreference({ totp: 'PREFERRED' });
+      } catch (error) {
+        // A wrong code keeps the enrolment open for another try, and so does a failure that
+        // never reached Cognito; any other refusal ends it, so the single-factor session
+        // Cognito completed at the password step does not outlive the enrolment.
+        const mapped = mapAmplifyError(error);
+        if (mapped instanceof AuthError && mapped.code !== 'code_mismatch') {
+          await signOut().catch(() => undefined);
+        }
+        throw error;
+      }
       return this.#currentTokens();
     });
   }
@@ -174,7 +188,10 @@ export class AmplifyAuthService implements AuthService {
   }
 
   signOut(): Observable<void> {
-    return effect(() => signOut());
+    return effect(async () => {
+      this.#enrolledToken = undefined;
+      await signOut();
+    });
   }
 
   async #confirm(code: string): Promise<AuthTokens> {
@@ -193,10 +210,10 @@ export class AmplifyAuthService implements AuthService {
   /** A therapist session counts only with TOTP enabled; anything else is signed out. */
   async #enrolledOnly(tokens: AuthTokens | null): Promise<AuthTokens | null> {
     if (!tokens || decodeJwtClaims(tokens.accessToken).role !== 'therapist') return tokens;
-    if (this.#enrolled.has(tokens.accessToken)) return tokens;
+    if (this.#enrolledToken === tokens.accessToken) return tokens;
     const preference = await fetchMFAPreference();
     if (preference.enabled?.includes('TOTP')) {
-      this.#enrolled.add(tokens.accessToken);
+      this.#enrolledToken = tokens.accessToken;
       return tokens;
     }
     await signOut().catch(() => undefined);

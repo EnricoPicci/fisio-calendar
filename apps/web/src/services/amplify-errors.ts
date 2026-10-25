@@ -10,7 +10,7 @@ import { NetworkError } from './network-error';
 /** Amplify signals a request that never reached Cognito with this exception name. */
 const AMPLIFY_NETWORK_ERROR = 'NetworkError';
 /** Thrown by `signIn` while Amplify still holds a user: the caller signs out and retries. */
-export const ALREADY_AUTHENTICATED = 'UserAlreadyAuthenticatedException';
+const ALREADY_AUTHENTICATED = 'UserAlreadyAuthenticatedException';
 
 export function isAlreadyAuthenticated(error: unknown): boolean {
   return nameOf(error) === ALREADY_AUTHENTICATED;

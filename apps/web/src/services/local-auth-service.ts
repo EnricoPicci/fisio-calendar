@@ -56,13 +56,6 @@ const EmulatorEnrolment = z.object({
 const StoredTokens = EmulatorTokens.omit({ expiresIn: true });
 type StoredTokens = z.infer<typeof StoredTokens>;
 
-/**
- * What a refused refresh leaves behind instead of the dead pair: `restore()` reads it as
- * nobody, and a refresh of the same pair that another tab wins meanwhile can tell this
- * marker (keep the rotated pair) from a sign-out (the key is gone: stay signed out).
- */
-const SpentMarker = z.object({ spent: z.string().min(1) });
-
 export class LocalAuthService implements AuthService {
   readonly #issuer: string;
   readonly #fetch: typeof fetch;
@@ -170,8 +163,9 @@ export class LocalAuthService implements AuthService {
         const now = this.#stored();
         // Another tab already rotated the pair this call was refused for: use it.
         if (now && now.refreshToken !== stored.refreshToken) return pick(now);
-        // The emulator spends a refresh token it refuses: leave a marker in place of the
-        // dead pair, so a tab whose refresh of the same pair wins can still keep its answer.
+        // The emulator spends a refresh token it refuses: leave a marker in place of the dead
+        // pair (`restore()` reads it as nobody), so a tab whose refresh of the same pair wins
+        // can tell it from a sign-out (the key gone) and still keep its answer.
         if (now?.refreshToken === stored.refreshToken) {
           this.#storage.set(LOCAL_TOKENS_KEY, JSON.stringify({ spent: stored.refreshToken }));
         }
@@ -235,16 +229,6 @@ export class LocalAuthService implements AuthService {
     const code = (json as { code?: unknown } | undefined)?.code;
     if (typeof code === 'string' && isAuthErrorCode(code)) throw new AuthError(code);
     throw new Error(`The auth emulator answered ${response.status} ${String(code ?? '')}`);
-  }
-}
-
-/** True when the storage holds the spent marker a refused refresh leaves. */
-export function isSpentMarker(raw: string | null): boolean {
-  if (!raw) return false;
-  try {
-    return SpentMarker.safeParse(JSON.parse(raw)).success;
-  } catch {
-    return false;
   }
 }
 

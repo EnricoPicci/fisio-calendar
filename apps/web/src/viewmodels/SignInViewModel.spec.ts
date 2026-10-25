@@ -204,6 +204,22 @@ describe('C1 Client sign-in with a one-time code (architecture §3.3, §10.4)', 
     expect(await firstValueFrom(vm.error$)).toBe(strings.common.unexpectedError);
   });
 
+  it('a lockout at the email step is told and the email form stays', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.requestCode.mockReturnValue(cold('-#', undefined, new AuthError('too_many_attempts')));
+      void vm.requestCode(EMAIL);
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.auth.errors.too_many_attempts });
+      expectObservable(vm.step$).toBe('e', { e: 'email' });
+    });
+  });
+
+  it('an attempt after dispose() runs no effect and settles', async () => {
+    auth.requestCode.mockReturnValue(of(undefined));
+    vm.dispose();
+    await expect(vm.requestCode(EMAIL)).resolves.toBeUndefined();
+    expect(auth.requestCode).not.toHaveBeenCalled();
+  });
+
   it('dispose() while an attempt is in flight settles its promise', async () => {
     auth.requestCode.mockReturnValue(NEVER);
     const pending = vm.requestCode(EMAIL);
@@ -276,7 +292,13 @@ describe('T1 Therapist sign-in with password and TOTP (architecture §3.3, §8.1
     expect(session.start).not.toHaveBeenCalled();
   });
 
-  it.each(['too_many_attempts', 'not_authorized', 'invalid_session', 'code_expired'] as const)(
+  it.each([
+    'too_many_attempts',
+    'not_authorized',
+    'invalid_session',
+    'code_expired',
+    'invalid_password',
+  ] as const)(
     'any other refusal on the TOTP step (%s) sends the therapist back to the password step',
     (code) => {
       scheduler.run(({ cold, expectObservable }) => {

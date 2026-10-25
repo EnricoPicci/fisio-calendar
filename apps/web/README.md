@@ -50,7 +50,8 @@ test/support/    fakes for specs (AuthService, ApiClient, JWTs); test/journeys a
 `pnpm test` runs them (project `web`): view-model marbles (`src/viewmodels/*.spec.ts`), the
 `ViewModel` base, the `ApiClient` against a recording fetch, `LocalAuthService` against the auth
 emulator's Hono app in-process (DynamoDB Local, codes read from `FakeChannel`), the generated
-types' freshness, and the sign-in page binding (`// @vitest-environment jsdom`, Testing Library).
+types' freshness, and the template bindings and the shell (`src/pages/*.spec.tsx`,
+`src/app/*.spec.tsx`; `// @vitest-environment jsdom`, Testing Library).
 
 ## Pages (M0)
 
