@@ -1,3 +1,4 @@
+import { DEFAULT_EMULATOR_CONFIG } from '@fisio/auth-emulator';
 import { createTestEmulator, otpCodeIn, type TestEmulator } from '@fisio/auth-emulator/testing';
 import { ClientIdSchema } from '@fisio/contracts';
 import {
@@ -9,6 +10,7 @@ import {
 } from '@fisio/testkit';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createTokenVerifier } from '../src/identity/token-verifier';
+import { LOCAL_DEFAULTS } from '../src/runtime/local';
 import { apiHarness } from './harness';
 
 /**
@@ -86,5 +88,13 @@ describe('Local stack: the API accepts the auth emulator tokens', () => {
 
     const me = await h.call('GET', '/me', { token: tokens.accessToken });
     expect(me.body).toEqual({ role: 'therapist', therapistId: user.userId });
+  });
+
+  // Value: protects=`pnpm dev`'s API trusts the issuer and client id the emulator signs with; fails_when=the emulator's port, pool id or client id changes on one side only; why_new=the two values are copied across packages; seam=none; no_claim=a running `pnpm dev`
+  it('the local API expects the issuer and client id of the local emulator', () => {
+    expect([LOCAL_DEFAULTS.AUTH_ISSUER, LOCAL_DEFAULTS.AUTH_CLIENT_ID]).toEqual([
+      DEFAULT_EMULATOR_CONFIG.issuer,
+      DEFAULT_EMULATOR_CONFIG.clientId,
+    ]);
   });
 });

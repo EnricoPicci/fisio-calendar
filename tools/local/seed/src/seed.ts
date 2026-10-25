@@ -108,7 +108,8 @@ export async function seedLocal(deps: SeedDeps): Promise<SeedReport> {
   });
   let credentials: SeedReport['therapist']['credentials'];
   if (result.setupLink) {
-    const code = new URLSearchParams(new URL(result.setupLink).hash.slice(1)).get('code') ?? '';
+    const code = new URLSearchParams(new URL(result.setupLink).hash.slice(1)).get('code');
+    if (!code) throw new Error(`The setup link carries no code: ${result.setupLink}`);
     const { secret, otpauthUri } = await deps.completeSetup(code, SEED_THERAPIST_PASSWORD);
     credentials = { password: SEED_THERAPIST_PASSWORD, totpSecret: secret, otpauthUri };
   }

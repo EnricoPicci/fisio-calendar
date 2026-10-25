@@ -137,29 +137,22 @@ export class EmulatorStore {
     return link ? this.getUser(String(link.userId)) : undefined;
   }
 
-  /** Sets (or, for `undefined` values, removes) user fields; a missing user is not found. */
+  /** Sets user fields (`undefined` values are skipped); a missing user is not found. */
   async updateUser(userId: string, changes: UserChanges): Promise<void> {
     const set = Object.entries(changes).filter(([, value]) => value !== undefined);
-    const remove = Object.entries(changes).filter(([, value]) => value === undefined);
-    const names = Object.fromEntries(
-      [...set, ...remove].map(([field], index) => [`#f${index}`, field]),
-    );
-    const values = Object.fromEntries(set.map(([, value], index) => [`:v${index}`, value]));
-    const clauses = [
-      set.length ? `SET ${set.map((_, index) => `#f${index} = :v${index}`).join(', ')}` : '',
-      remove.length
-        ? `REMOVE ${remove.map((_, index) => `#f${set.length + index}`).join(', ')}`
-        : '',
-    ];
     try {
       await this.doc.send(
         new UpdateCommand({
           TableName: this.table,
           Key: { PK: this.#pk, SK: userSk(userId) },
-          UpdateExpression: clauses.filter(Boolean).join(' '),
+          UpdateExpression: `SET ${set.map((_, index) => `#f${index} = :v${index}`).join(', ')}`,
           ConditionExpression: 'attribute_exists(PK)',
-          ExpressionAttributeNames: names,
-          ...(set.length ? { ExpressionAttributeValues: values } : {}),
+          ExpressionAttributeNames: Object.fromEntries(
+            set.map(([field], index) => [`#f${index}`, field]),
+          ),
+          ExpressionAttributeValues: Object.fromEntries(
+            set.map(([, value], index) => [`:v${index}`, value]),
+          ),
         }),
       );
     } catch (error) {

@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { isAuthErrorCode } from '@fisio/contracts';
-import { type Clock, type NotificationChannel, systemClock } from '@fisio/domain';
+import { type NotificationChannel, systemClock } from '@fisio/domain';
 import { tableName } from '@fisio/infra/table-definition';
 import { localDynamoClient } from '@fisio/local/table';
 import { serve } from '@hono/node-server';
@@ -22,10 +22,10 @@ import { EmulatorStore } from './store';
  * The emulator over HTTP, for `pnpm dev` (docs/architecture.md §11.4): the JWKS the API verifies
  * against and the sign-in steps the SPA's `LocalAuthService` (WP0.7) calls. Routes sit under the
  * issuer's path, so `<issuer>/.well-known/jwks.json` is the JWKS, as on Cognito. A refused step
- * answers 400 `{ code }` with an `AuthErrorCode`. Three answers are not sign-in outcomes and carry
+ * answers 400 `{ code }` with an `AuthErrorCode`. Four answers are not sign-in outcomes and carry
  * a code outside that list: 400 `validation_failed` (a malformed body, or a POST that is not
  * `application/json`), 403 `forbidden_origin` (a browser origin other than the Vite dev server),
- * 404 `not_found`; and 500 `internal_error`. `LocalAuthService` (WP0.7) treats them as unexpected.
+ * 404 `not_found` and 500 `internal_error`. `LocalAuthService` (WP0.7) treats them as unexpected.
  */
 const EmailBody = z.object({ email: z.string().min(1).max(320) }).strict();
 const AnswerBody = z
@@ -112,15 +112,9 @@ export const consoleChannel: NotificationChannel = {
   },
 };
 
-export interface LocalEmulatorOptions {
-  readonly clock?: Clock;
-  readonly channel?: NotificationChannel;
-  readonly config?: EmulatorConfig;
-}
-
 /** The emulator on DynamoDB Local's `fisio-local` table, as `pnpm dev` and the seed use it. */
-export function createLocalEmulator(options: LocalEmulatorOptions = {}) {
-  const config = options.config ?? DEFAULT_EMULATOR_CONFIG;
+export function createLocalEmulator() {
+  const config = DEFAULT_EMULATOR_CONFIG;
   const doc = DynamoDBDocumentClient.from(localDynamoClient(), {
     marshallOptions: { removeUndefinedValues: true },
   });
@@ -128,8 +122,8 @@ export function createLocalEmulator(options: LocalEmulatorOptions = {}) {
   const emulator = new AuthEmulator({
     store,
     signer: new RsaSigner(),
-    channel: options.channel ?? consoleChannel,
-    clock: options.clock ?? systemClock,
+    channel: consoleChannel,
+    clock: systemClock,
     config,
   });
   return { config, doc, store, emulator };

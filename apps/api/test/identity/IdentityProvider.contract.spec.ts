@@ -89,6 +89,8 @@ export function describeIdentityProviderContract(
       const email = uniqueEmail('blocca');
       const user = await t.provider.createUser({ email, role: 'client' });
       const device = await t.signIn(email);
+      // Never refreshed while disabled: only the revocation can end it.
+      const idle = await t.signIn(email);
       await t.provider.disableUser(user.userId);
       await t.provider.disableUser(user.userId);
       expect(await t.provider.findUserByEmail(email)).toMatchObject({ enabled: false });
@@ -96,8 +98,8 @@ export function describeIdentityProviderContract(
 
       await t.provider.enableUser(user.userId);
       expect(await t.provider.findUserByEmail(email)).toMatchObject({ enabled: true });
-      // Disabling revoked the old session for good; only a new sign-in renews.
-      expect(await device.refresh()).toBe(false);
+      // Disabling revoked the old sessions for good; only a new sign-in renews.
+      expect(await idle.refresh()).toBe(false);
       expect(await (await t.signIn(email)).refresh()).toBe(true);
     });
 

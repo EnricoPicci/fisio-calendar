@@ -88,7 +88,7 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
     });
     await expect(
       failing.provider.createUser({ email: 'a@example.test', role: 'therapist' }),
-    ).rejects.toThrow('TooManyRequestsException');
+    ).rejects.toMatchObject({ name: 'TooManyRequestsException' });
     expect(failing.sent.map(({ command }) => command)).toEqual([
       'AdminCreateUserCommand',
       'AdminAddUserToGroupCommand',
@@ -118,7 +118,40 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
     });
     await expect(missing.provider.findUserByEmail('a@example.test')).resolves.toBeUndefined();
     await expect(missing.provider.disableUser(SUB)).rejects.toThrow(IdentityUserNotFoundError);
-    await expect(missing.provider.enableUser(SUB)).rejects.toThrow('TooManyRequestsException');
+    await expect(missing.provider.enableUser(SUB)).rejects.toMatchObject({
+      name: 'TooManyRequestsException',
+    });
+  });
+
+  // Value: protects=bootstrap and the block flow read Cognito's state right: an unconfirmed, disabled, MFA-less user is reported so; fails_when=FORCE_CHANGE_PASSWORD reads as passwordSet (bootstrap stops issuing links), Enabled false reads as enabled, or a sub-less user gets an id; why_new=only a confirmed, enabled, enrolled user is mapped; seam=recording client; no_claim=Cognito's real UserStatus values (WP0.10)
+  it('reads an unconfirmed, disabled user without MFA as such, and refuses a user without a sub', async () => {
+    const { provider } = recordingCognito({
+      AdminGetUserCommand: () => ({
+        Username: SUB,
+        Enabled: false,
+        UserStatus: 'FORCE_CHANGE_PASSWORD',
+        UserAttributes: [
+          { Name: 'sub', Value: SUB },
+          { Name: 'email', Value: 'cliente@example.test' },
+        ],
+      }),
+      AdminListGroupsForUserCommand: () => ({ Groups: [{ GroupName: 'client' }] }),
+    });
+    expect(await provider.findUserByEmail(' Cliente@Example.test')).toEqual({
+      userId: SUB,
+      email: 'cliente@example.test',
+      role: 'client',
+      enabled: false,
+      passwordSet: false,
+      totp: { enabled: false, preferred: false },
+      totpEnrolled: false,
+    });
+
+    const subless = recordingCognito({
+      ...existingUser,
+      AdminGetUserCommand: () => ({ Enabled: true, UserStatus: 'CONFIRMED', UserAttributes: [] }),
+    });
+    await expect(subless.provider.findUserByEmail('a@example.test')).rejects.toThrow();
   });
 
   // Value: protects=each port operation sends the Admin* command §8.1 names, for the given user; fails_when=a method calls the wrong command or the wrong user; why_new=first adapter; seam=recording client; no_claim=Cognito accepting the MFA preference before TOTP enrolment (WP0.10 spike)
@@ -129,8 +162,12 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
     await provider.deleteUser(SUB);
     await provider.globalSignOut(SUB);
     await provider.setTotpPreference(SUB, { enabled: true, preferred: true });
+    // Preferred only while enabled: Cognito never gets PreferredMfa without Enabled.
+    await provider.setTotpPreference(SUB, { enabled: false, preferred: true });
     expect(sent).toEqual([
       { command: 'AdminDisableUserCommand', input: { UserPoolId: POOL, Username: SUB } },
+      // Disabling also ends the refresh tokens, whatever AdminDisableUser revokes on its own.
+      { command: 'AdminUserGlobalSignOutCommand', input: { UserPoolId: POOL, Username: SUB } },
       { command: 'AdminEnableUserCommand', input: { UserPoolId: POOL, Username: SUB } },
       { command: 'AdminDeleteUserCommand', input: { UserPoolId: POOL, Username: SUB } },
       { command: 'AdminUserGlobalSignOutCommand', input: { UserPoolId: POOL, Username: SUB } },
@@ -140,6 +177,14 @@ describe('CognitoIdentityProvider: the IdentityProvider port on the Admin* API (
           UserPoolId: POOL,
           Username: SUB,
           SoftwareTokenMfaSettings: { Enabled: true, PreferredMfa: true },
+        },
+      },
+      {
+        command: 'AdminSetUserMFAPreferenceCommand',
+        input: {
+          UserPoolId: POOL,
+          Username: SUB,
+          SoftwareTokenMfaSettings: { Enabled: false, PreferredMfa: false },
         },
       },
     ]);

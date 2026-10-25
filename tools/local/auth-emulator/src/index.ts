@@ -19,10 +19,5 @@ export {
 } from './emulator';
 export { LocalIdentityProvider } from './identity-provider';
 export { type PublicJwk, RsaSigner } from './jwt';
-export {
-  consoleChannel,
-  createEmulatorApp,
-  createLocalEmulator,
-  type LocalEmulatorOptions,
-} from './server';
+export { consoleChannel, createEmulatorApp, createLocalEmulator } from './server';
 export { EmulatorStore } from './store';

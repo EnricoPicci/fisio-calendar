@@ -207,6 +207,40 @@ describe('C1 Sign in without a password (local auth emulator)', () => {
     await h.identity.disableUser(user.userId);
     expect(await refusal(h.emulator.refresh(again.refreshToken))).toBe('not_authorized');
   });
+
+  // Value: protects=blocking stops a sign-in already under way and a right password; fails_when=a code or TOTP step opened before the block, or a disabled therapist's password, still yields tokens; why_new=refresh-only block coverage so far; seam=none; no_claim=Cognito's pre-authentication trigger (WP0.9)
+  it('a blocked account cannot finish a sign-in started before the block, nor sign in with the right password', async () => {
+    const client = await h.client();
+    const otp = sessionOf(await h.emulator.startEmailOtp(client.email));
+    await h.identity.disableUser(client.userId);
+    expect(await refusal(h.emulator.answerEmailOtp(otp, h.lastCode(client.email)))).toBe(
+      'not_authorized',
+    );
+
+    const therapist = await h.therapist();
+    const totp = sessionOf(
+      await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD),
+    );
+    await h.identity.disableUser(therapist.userId);
+    expect(await refusal(h.emulator.answerTotp(totp, await h.totp(therapist.secret)))).toBe(
+      'not_authorized',
+    );
+    expect(await refusal(h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD))).toBe(
+      'not_authorized',
+    );
+  });
+
+  // Value: protects=a refresh token renews once even when two tabs use it at the same moment; fails_when=takeRefresh's conditional delete is dropped and both get tokens; why_new=state-machines finding (WP0.5): only sequential reuse was specced; seam=DynamoDB Local conditional writes; no_claim=Cognito's rotation grace period (TODOS)
+  it('a refresh token used twice at once renews once', async () => {
+    const user = await h.client();
+    const session = sessionOf(await h.emulator.startEmailOtp(user.email));
+    const tokens = await h.emulator.answerEmailOtp(session, h.lastCode(user.email));
+    const results = await Promise.allSettled([
+      h.emulator.refresh(tokens.refreshToken),
+      h.emulator.refresh(tokens.refreshToken),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+  });
 });
 
 describe('T1 Sign in with TOTP (local auth emulator)', () => {
@@ -321,5 +355,149 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     await h.emulator.verifyTotpSetup(enrolment.session, await h.totp(enrolment.secret));
     expect(await h.identity.findUserByEmail(user.email)).toMatchObject({ passwordSet: true });
     expect(await refusal(h.emulator.startSetup(code, THERAPIST_PASSWORD))).toBe('not_authorized');
+  });
+
+  // Value: protects=the therapist's device session is 7 days (§8.1), not the clients' 30; fails_when=the therapist's refresh token gets the client lifetime or the role lookup is dropped; why_new=only the 30-day client lifetime is specced; seam=FixedClock; no_claim=the Cognito app client's own setting (infra, WP0.9)
+  it('the therapist stays signed in for 7 days', async () => {
+    const therapist = await h.therapist();
+    const step = await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD);
+    const first = await h.emulator.answerTotp(sessionOf(step), await h.totp(therapist.secret));
+
+    h.clock.advance({ days: 6 });
+    const second = await h.emulator.refresh(first.refreshToken);
+    h.clock.advance({ days: 1 });
+    expect(await refusal(h.emulator.refresh(second.refreshToken))).toBe('not_authorized');
+  });
+
+  // Value: protects=a printed setup link stops working after 7 days and for a disabled account; fails_when=the setup record's expiry or the enabled check is dropped from startSetup; why_new=only replaced and spent codes are specced; seam=FixedClock; no_claim=Cognito's temporary-password expiry (WP0.10)
+  it('a setup link expires after 7 days and is refused once the account is disabled', async () => {
+    const late = await h.identity.createUser({ email: 'scaduto@example.test', role: 'therapist' });
+    const code = await h.identity.startPasswordSetup(late.userId);
+    h.clock.advance({ days: 6, hours: 23, minutes: 59 });
+    await expect(h.emulator.startSetup(code, THERAPIST_PASSWORD)).resolves.toHaveProperty('secret');
+    h.clock.advance({ minutes: 1 });
+    expect(await refusal(h.emulator.startSetup(code, THERAPIST_PASSWORD))).toBe('not_authorized');
+
+    const blocked = await h.identity.createUser({
+      email: 'bloccato@example.test',
+      role: 'therapist',
+    });
+    const blockedCode = await h.identity.startPasswordSetup(blocked.userId);
+    await h.identity.disableUser(blocked.userId);
+    expect(await refusal(h.emulator.startSetup(blockedCode, THERAPIST_PASSWORD))).toBe(
+      'not_authorized',
+    );
+  });
+
+  // Value: protects=the TOTP challenge follows the user's MFA preference; fails_when=the preference check is inverted, or the challenge is skipped or forced wrongly; why_new=only preference-on is specced; seam=none; no_claim=Cognito's MFA-optional behaviour (WP0.10)
+  it('without the TOTP preference the password signs in without a challenge', async () => {
+    const therapist = await h.therapist();
+    await h.identity.setTotpPreference(therapist.userId, { enabled: false, preferred: false });
+    expect(await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD)).toMatchObject({
+      kind: 'signedIn',
+      tokens: { accessToken: expect.any(String) },
+    });
+
+    await h.identity.setTotpPreference(therapist.userId, { enabled: true, preferred: true });
+    expect(await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD)).toMatchObject({
+      kind: 'challenge',
+      challenge: 'SOFTWARE_TOKEN_MFA',
+    });
+  });
+
+  // Value: protects=a password-proven step and an enrolment step last 5 minutes, and an expired enrolment stores nothing while the link stays usable; fails_when=the expiry check is dropped from answerTotp or verifyTotpSetup (the TTL deletes lazily); why_new=state-machines and testing findings (WP0.5): only the email code's expiry was specced; seam=FixedClock; no_claim=Cognito's AuthSessionValidity (WP0.9)
+  it('a TOTP step or an enrolment left open for 5 minutes is refused', async () => {
+    const therapist = await h.therapist();
+    const step = sessionOf(
+      await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD),
+    );
+    h.clock.advance({ minutes: 5 });
+    expect(await refusal(h.emulator.answerTotp(step, await h.totp(therapist.secret)))).toBe(
+      'invalid_session',
+    );
+
+    const user = await h.identity.createUser({ email: 'lenta@example.test', role: 'therapist' });
+    const code = await h.identity.startPasswordSetup(user.userId);
+    const enrolment = await h.emulator.startSetup(code, THERAPIST_PASSWORD);
+    h.clock.advance({ minutes: 5 });
+    expect(
+      await refusal(h.emulator.verifyTotpSetup(enrolment.session, await h.totp(enrolment.secret))),
+    ).toBe('invalid_session');
+    expect(await h.identity.findUserByEmail(user.email)).toMatchObject({
+      passwordSet: false,
+      totpEnrolled: false,
+    });
+    await expect(h.emulator.startSetup(code, THERAPIST_PASSWORD)).resolves.toHaveProperty('secret');
+  });
+
+  // Value: protects=wrong TOTP codes count toward the lockout at sign-in and at enrolment, the fifth ends the step, and a failed enrolment stores nothing; fails_when=TOTP or enrolment failures are not counted, the step survives the lockout, or a malformed code is not refused like a wrong one; why_new=state-machines finding (WP0.5): the lockout was reached only with wrong passwords; seam=none; no_claim=Cognito's own lockout counts
+  it('five wrong TOTP codes lock the email and end the step, at sign-in and at enrolment', async () => {
+    const therapist = await h.therapist();
+    const step = sessionOf(
+      await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD),
+    );
+    const right = await h.totp(therapist.secret);
+    const wrong = `${(Number(right[0]) + 1) % 10}${right.slice(1)}`;
+    const answers: string[] = [];
+    for (const code of [wrong, wrong, 'abcdef', wrong, wrong]) {
+      answers.push(await refusal(h.emulator.answerTotp(step, code)));
+    }
+    expect(answers).toEqual([
+      'code_mismatch',
+      'code_mismatch',
+      'code_mismatch',
+      'code_mismatch',
+      'too_many_attempts',
+    ]);
+    h.clock.advance({ minutes: 15 });
+    expect(await refusal(h.emulator.answerTotp(step, await h.totp(therapist.secret)))).toBe(
+      'invalid_session',
+    );
+
+    const user = await h.identity.createUser({ email: 'sbaglia@example.test', role: 'therapist' });
+    const enrolment = await h.emulator.startSetup(
+      await h.identity.startPasswordSetup(user.userId),
+      THERAPIST_PASSWORD,
+    );
+    const first = await h.totp(enrolment.secret);
+    const bad = `${(Number(first[0]) + 1) % 10}${first.slice(1)}`;
+    const setupAnswers: string[] = [];
+    for (let attempt = 0; attempt < 5; attempt++) {
+      setupAnswers.push(await refusal(h.emulator.verifyTotpSetup(enrolment.session, bad)));
+    }
+    expect(setupAnswers.at(-1)).toBe('too_many_attempts');
+    expect(await h.identity.findUserByEmail(user.email)).toMatchObject({
+      passwordSet: false,
+      totpEnrolled: false,
+    });
+  });
+
+  // Value: protects=a block during enrolment stores neither the password nor the secret; fails_when=verifyTotpSetup skips the enabled check; why_new=state-machines finding (WP0.5); seam=none; no_claim=none beyond protects
+  it('a block during enrolment stores nothing', async () => {
+    const user = await h.identity.createUser({ email: 'fermata@example.test', role: 'therapist' });
+    const enrolment = await h.emulator.startSetup(
+      await h.identity.startPasswordSetup(user.userId),
+      THERAPIST_PASSWORD,
+    );
+    await h.identity.disableUser(user.userId);
+    expect(
+      await refusal(h.emulator.verifyTotpSetup(enrolment.session, await h.totp(enrolment.secret))),
+    ).toBe('not_authorized');
+    expect(await h.identity.findUserByEmail(user.email)).toMatchObject({
+      passwordSet: false,
+      totpEnrolled: false,
+    });
+  });
+
+  // Value: protects=an enrolment opened just before the setup link expired can finish within its 5 minutes; fails_when=verifyTotpSetup starts refusing on the link's expiry, stranding a therapist mid-enrolment; why_new=state-machines finding (WP0.5): the boundary was undocumented; seam=FixedClock; no_claim=Cognito's temporary-password expiry
+  it('an enrolment started before the setup link expired can finish', async () => {
+    const user = await h.identity.createUser({ email: 'limite@example.test', role: 'therapist' });
+    const code = await h.identity.startPasswordSetup(user.userId);
+    h.clock.advance({ days: 6, hours: 23, minutes: 59 });
+    const enrolment = await h.emulator.startSetup(code, THERAPIST_PASSWORD);
+    h.clock.advance({ minutes: 2 });
+    await expect(
+      h.emulator.verifyTotpSetup(enrolment.session, await h.totp(enrolment.secret)),
+    ).resolves.toHaveProperty('accessToken');
   });
 });

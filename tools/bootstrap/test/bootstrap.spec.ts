@@ -92,8 +92,8 @@ describe('bootstrap:therapist (architecture §11.5)', () => {
     ).resolves.toHaveProperty('secret');
   });
 
-  // Value: protects=a password without an enrolled authenticator is not a finished setup (Cognito with MFA optional can reach that state); fails_when=bootstrap stops issuing links once a password exists; why_new=red-team finding (WP0.5); seam=a stub port, since the emulator stores both together; no_claim=Cognito's MFA_SETUP challenge (WP0.10)
-  it('keeps issuing a setup link while TOTP is not enrolled, even with a password', async () => {
+  // Value: protects=a password without an enrolled authenticator is not a finished setup (Cognito with MFA optional can reach that state), and the sessions it opened end; fails_when=bootstrap stops issuing links once a password exists, or skips the sign-out; why_new=red-team and security findings (WP0.5); seam=a stub port, since the emulator stores both together; no_claim=Cognito's MFA_SETUP challenge (WP0.10)
+  it('keeps issuing a setup link while TOTP is not enrolled, even with a password, and signs her out first', async () => {
     const user: IdentityUser = {
       userId: '6a1f0c7e-1d2b-4c3d-9e8f-0a1b2c3d4e5f',
       email: 'solo-password@example.test',
@@ -103,13 +103,49 @@ describe('bootstrap:therapist (architecture §11.5)', () => {
       totp: { enabled: true, preferred: true },
       totpEnrolled: false,
     };
+    const calls: string[] = [];
     const identity = identityWith({
       findUserByEmail: async () => user,
       setTotpPreference: async () => {},
-      startPasswordSetup: async () => 'codice-nuovo',
+      globalSignOut: async () => {
+        calls.push('globalSignOut');
+      },
+      startPasswordSetup: async () => {
+        calls.push('startPasswordSetup');
+        return 'codice-nuovo';
+      },
     });
     const result = await bootstrapTherapist({ ...deps, identity }, input(user.email));
     expect(code(result.setupLink)).toBe('codice-nuovo');
+    expect(calls).toEqual(['globalSignOut', 'startPasswordSetup']);
+  });
+
+  // Value: protects=an enrolled therapist whose TOTP preference was off gets it back and no new link (which on Cognito would replace her password); fails_when=bootstrap decides from the read taken before it restored the preference; why_new=state-machines finding (WP0.5); seam=a stub port shaped like Cognito, where enrolment shows only while the preference is on; no_claim=Cognito's real UserMFASettingList (WP0.10 spike)
+  it('an enrolled therapist with the TOTP preference off gets it back and no new link', async () => {
+    let preferenceOn = false;
+    const identity = identityWith({
+      findUserByEmail: async () => ({
+        userId: '8c3f0c7e-1d2b-4c3d-9e8f-0a1b2c3d4e5f',
+        email: 'preferenza@example.test',
+        role: 'therapist',
+        enabled: true,
+        passwordSet: true,
+        totp: { enabled: preferenceOn, preferred: preferenceOn },
+        totpEnrolled: preferenceOn,
+      }),
+      setTotpPreference: async (_, preference) => {
+        preferenceOn = preference.enabled;
+      },
+      startPasswordSetup: async () => {
+        throw new Error('a new setup would replace her password');
+      },
+    });
+    const result = await bootstrapTherapist(
+      { ...deps, identity },
+      input('preferenza@example.test'),
+    );
+    expect(result.setupLink).toBeUndefined();
+    expect(preferenceOn).toBe(true);
   });
 
   // Value: protects=two runs racing on a fresh pool end with one therapist; fails_when=the losing run crashes or creates a second user; why_new=testing finding (WP0.5); seam=a stub port; no_claim=the provider's own uniqueness (contract spec)
@@ -139,6 +175,34 @@ describe('bootstrap:therapist (architecture §11.5)', () => {
         reenabled: false,
       },
     );
+  });
+
+  // Value: protects=a finished, enabled therapist's re-run leaves her password and account alone; fails_when=a re-run issues a link (on Cognito a new temporary password) or changes the user; why_new=state-machines finding (WP0.5): only the disabled variant was specced; seam=emulator; no_claim=Cognito's preference list (stub row above)
+  it('a finished, enabled therapist gets no link and keeps her password', async () => {
+    const first = await bootstrapTherapist(deps, input('fatto@example.test'));
+    await t.completeSetup(code(first.setupLink), 'una-password-lunga');
+    const again = await bootstrapTherapist(deps, input('fatto@example.test'));
+    expect(again).toEqual({
+      userId: first.userId,
+      email: 'fatto@example.test',
+      created: false,
+      reenabled: false,
+    });
+    clock.advance({ seconds: 30 });
+    await expect(
+      t.emulator.signInWithPassword('fatto@example.test', 'una-password-lunga'),
+    ).resolves.toMatchObject({ kind: 'challenge' });
+  });
+
+  // Value: protects=a disabled therapist who never finished setup is re-enabled and gets a link that works; fails_when=the re-enable is skipped or the fresh code does not open a setup; why_new=state-machines finding (WP0.5); seam=emulator; no_claim=none beyond protects
+  it('a disabled therapist who never finished setup is re-enabled and gets a working link', async () => {
+    const first = await bootstrapTherapist(deps, input('ferma@example.test'));
+    await t.identity.disableUser(first.userId);
+    const again = await bootstrapTherapist(deps, input('ferma@example.test'));
+    expect(again).toMatchObject({ reenabled: true, setupLink: expect.any(String) });
+    await expect(
+      t.emulator.startSetup(code(again.setupLink), 'una-password-lunga'),
+    ).resolves.toHaveProperty('secret');
   });
 
   // Value: protects=bootstrap never turns a client into the therapist; fails_when=a client's email is given therapist settings or MFA; why_new=first bootstrap; seam=emulator; no_claim=role changes in general

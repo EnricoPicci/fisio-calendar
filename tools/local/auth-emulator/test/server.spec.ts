@@ -1,7 +1,7 @@
 import { closeTestDocumentClient } from '@fisio/testkit';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createEmulatorApp } from '../src/server';
-import { emulatorHarness } from './harness';
+import { emulatorHarness, THERAPIST_PASSWORD } from './harness';
 
 const h = emulatorHarness();
 afterAll(closeTestDocumentClient);
@@ -79,5 +79,44 @@ describe('Auth emulator over HTTP (pnpm dev, architecture §11.4)', () => {
       'content-type': 'application/json',
     });
     expect(local.status).toBe(200);
+  });
+
+  // Value: protects=the SPA's therapist setup and password + TOTP sign-in reach their handlers over HTTP, and odd requests get their codes; fails_when=a therapist route is missing or miswired, an unknown path is not 404 not_found, or malformed JSON is a 500; why_new=only the code flow is specced over HTTP; seam=app.request; no_claim=CORS in a real browser (Playwright, WP0.8)
+  it('runs the setup link and the password + TOTP sign-in; an unknown path or malformed JSON gets its code', async () => {
+    const user = await h.identity.createUser({
+      email: 'http-terapista@example.test',
+      role: 'therapist',
+    });
+    await h.identity.setTotpPreference(user.userId, { enabled: true, preferred: true });
+    const setup = await post('/setup', {
+      code: await h.identity.startPasswordSetup(user.userId),
+      password: THERAPIST_PASSWORD,
+    });
+    expect(setup.status).toBe(200);
+    const verified = await post('/setup/verify', {
+      session: setup.body.session,
+      code: await h.totp(setup.body.secret),
+    });
+    expect(verified.body).toHaveProperty('accessToken');
+
+    h.clock.advance({ seconds: 30 });
+    const password = await post('/password', { email: user.email, password: THERAPIST_PASSWORD });
+    expect(password.body).toMatchObject({ kind: 'challenge', challenge: 'SOFTWARE_TOKEN_MFA' });
+    const signedIn = await post('/totp/answer', {
+      session: password.body.session,
+      code: await h.totp(setup.body.secret),
+    });
+    expect(signedIn.body).toHaveProperty('accessToken');
+
+    expect(await post('/nowhere', {})).toEqual({ status: 404, body: { code: 'not_found' } });
+    const malformed = await app.request(`${base}/password`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    });
+    expect([malformed.status, await malformed.json()]).toEqual([
+      400,
+      { code: 'validation_failed' },
+    ]);
   });
 });

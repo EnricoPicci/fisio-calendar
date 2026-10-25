@@ -58,8 +58,12 @@ export async function bootstrapTherapist(
   await deps.identity.setTotpPreference(user.userId, { enabled: true, preferred: true });
   await deps.settings.create(input.tenantId, deps.clock.now());
   const result = { userId: user.userId, email, created, reenabled };
-  if (user.passwordSet && user.totpEnrolled) return result;
+  // Read again: Cognito lists TOTP as enrolled only while the preference is on (§15).
+  const current = (await deps.identity.findUserByEmail(email)) ?? user;
+  if (current.passwordSet && current.totpEnrolled) return result;
 
+  // A password without TOTP is a setup to redo: end the sessions that password opened.
+  if (current.passwordSet) await deps.identity.globalSignOut(user.userId);
   const code = await deps.identity.startPasswordSetup(user.userId);
   const link = new URL(input.setupUrl);
   link.hash = new URLSearchParams({ email, code }).toString();

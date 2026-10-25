@@ -48,7 +48,8 @@ export interface IdentityProvider {
   findUserByEmail(email: string): Promise<IdentityUser | undefined>;
   /**
    * Refuses sign-in and token refresh from now on, and revokes the refresh tokens issued so far
-   * (Cognito's `AdminDisableUser`): enabling the user again does not revive them. Idempotent.
+   * (Cognito's `AdminDisableUser` and `AdminUserGlobalSignOut`): enabling the user again does not
+   * revive them. Idempotent.
    */
   disableUser(userId: string): Promise<void>;
   enableUser(userId: string): Promise<void>;
@@ -59,7 +60,8 @@ export interface IdentityProvider {
   setTotpPreference(userId: string, preference: TotpPreference): Promise<void>;
   /**
    * Starts a password setup and returns its one-time code, the secret part of the setup link
-   * the bootstrap CLI prints (§11.5). A new code replaces any earlier one.
+   * the bootstrap CLI prints (§11.5). A new code replaces any earlier one. On Cognito the code is
+   * a temporary password, so a user who already had a password must choose a new one.
    */
   startPasswordSetup(userId: string): Promise<string>;
 }

@@ -16,6 +16,7 @@ export interface EmulatorConfig {
   /** Partitions the emulator's items in the table; one per spec file. */
   readonly poolId: string;
   readonly otpDigits: number;
+  /** The life of every sign-in step: the email code, the TOTP challenge and the TOTP enrolment. */
   readonly otpValiditySeconds: number;
   readonly maxFailedAttempts: number;
   readonly lockoutSeconds: number;

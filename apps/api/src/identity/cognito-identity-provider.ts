@@ -117,12 +117,14 @@ export class CognitoIdentityProvider implements IdentityProvider {
     };
   }
 
+  /** AdminDisableUser revokes access tokens; the sign-out ends the refresh tokens too (§8.1). */
   async disableUser(userId: string): Promise<void> {
     await this.#admin(() =>
       this.cognito.send(
         new AdminDisableUserCommand({ UserPoolId: this.userPoolId, Username: userId }),
       ),
     );
+    await this.globalSignOut(userId);
   }
 
   async enableUser(userId: string): Promise<void> {
