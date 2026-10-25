@@ -61,6 +61,9 @@ const TOTP_ISSUER = 'Fisio Calendar';
 const TOTP_TOLERANCE_SECONDS = 30;
 const TOTP_CODE = /^\d{6}$/;
 
+/** What a refusal needs: the email it counts against, and the session it may end. */
+type RefusedStep = Pick<Session, 'email'> & Partial<Session>;
+
 export interface AuthEmulatorDeps {
   readonly store: EmulatorStore;
   readonly signer: RsaSigner;
@@ -268,27 +271,24 @@ export class AuthEmulator {
       expiresAt,
       tokenGeneration: user.tokenGeneration,
     });
-    return {
-      accessToken: this.#signer.sign({
-        ...common,
-        token_use: 'access',
-        client_id: config.clientId,
-        scope: 'aws.cognito.signin.user.admin',
-        username: user.userId,
-        jti: randomToken(16),
-      }),
-      idToken: this.#signer.sign({
-        ...common,
-        token_use: 'id',
-        aud: config.clientId,
-        email: user.email,
-        email_verified: true,
-        'cognito:username': user.userId,
-        jti: randomToken(16),
-      }),
-      refreshToken,
-      expiresIn: config.accessTokenSeconds,
-    };
+    const access = this.#signer.sign({
+      ...common,
+      token_use: 'access',
+      client_id: config.clientId,
+      scope: 'aws.cognito.signin.user.admin',
+      username: user.userId,
+      jti: randomToken(16),
+    });
+    const id = this.#signer.sign({
+      ...common,
+      token_use: 'id',
+      aud: config.clientId,
+      email: user.email,
+      email_verified: true,
+      'cognito:username': user.userId,
+      jti: randomToken(16),
+    });
+    return { accessToken: access, idToken: id, refreshToken, expiresIn: config.accessTokenSeconds };
   }
 
   async #newSession(fields: Omit<Session, 'sessionId' | 'expiresAt'>): Promise<Session> {
@@ -352,10 +352,7 @@ export class AuthEmulator {
    * Counts a wrong code or password for the email (within the lockout window) and throws:
    * `code` normally, `too_many_attempts` at the threshold, which also ends the session.
    */
-  async #refuse(
-    session: Pick<Session, 'email'> & Partial<Session>,
-    code: AuthErrorCode,
-  ): Promise<never> {
+  async #refuse(session: RefusedStep, code: AuthErrorCode): Promise<never> {
     const now = this.#clock.now();
     const window = this.#config.lockoutSeconds;
     const failures = await this.#store.recordFailure(session.email, now, window);
