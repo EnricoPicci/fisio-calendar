@@ -1,0 +1,20 @@
+{
+  "name": "@fisio/openapi-types",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generates the SPA's typed API client types (apps/web/src/services/api.generated.ts) from docs/openapi.json with openapi-typescript, which needs the TypeScript 5 compiler API.",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.3"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.mjs"
+    }
+  }
+}

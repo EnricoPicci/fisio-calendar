@@ -10,11 +10,11 @@ runs and is tested locally.
 ## Layout
 
 ```
-apps/web        SPA: src/pages (templates) · src/viewmodels · src/services · test/journeys
+apps/web        SPA: src/app (ViewModel base, hooks, DI, shell) · src/pages (templates) · src/viewmodels · src/services · test/journeys
 apps/api        Lambda: src/http · src/usecases · src/repo · src/notify · src/identity · src/jobs · src/handlers · src/runtime (incl. the `pnpm tick` CLI)
 packages/       domain (pure TS) · contracts (Zod, errors, strings) · testkit (harness, recorders, doubles)
 infra/          CDK: Stateful, App, Edge stacks · assertions · bundle smoke
-tools/          local (docker-compose; auth-emulator and seed packages; table and SMTP helpers) · bootstrap (therapist CLI) · scripts
+tools/          local (docker-compose; auth-emulator and seed packages; table and SMTP helpers) · bootstrap (therapist CLI) · openapi-types (SPA API types generator) · scripts
 e2e/            Playwright binding journeys
 docs/           architecture, implementation plan, generated specs/journeys/openapi
 ```
@@ -31,7 +31,7 @@ pnpm install
 pnpm local:up    # Docker: DynamoDB Local (:8000) and Mailpit (UI :8025), then the local table (Node >= 22.18)
 pnpm test        # the complete local suite: the only definition of green (needs local:up)
 pnpm seed        # the therapist (prints password + TOTP secret) and a dozen clients
-pnpm dev         # the API on http://127.0.0.1:3000/api/v1 and the auth emulator on :9100 (watch mode)
+pnpm dev         # the web app on http://127.0.0.1:5173, the API on :3000/api/v1, the auth emulator on :9100 (watch mode)
 pnpm typecheck
 pnpm lint
 ```

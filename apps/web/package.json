@@ -5,6 +5,34 @@
   "type": "module",
   "description": "React SPA: templates without logic (src/pages), view-models with RxJS (src/viewmodels), services, headless UI journeys (test/journeys).",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.spec.json && tsc --noEmit -p tsconfig.node.json"
+  },
+  "dependencies": {
+    "@fisio/contracts": "workspace:*",
+    "@fisio/domain": "workspace:*",
+    "aws-amplify": "^6.22.2",
+    "openapi-fetch": "^0.17.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^7.18.4",
+    "rxjs": "^7.8.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@fisio/auth-emulator": "workspace:*",
+    "@fisio/openapi-types": "workspace:*",
+    "@fisio/testkit": "workspace:*",
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "jsdom": "^30.1.3",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.5"
   }
 }

@@ -13,10 +13,55 @@
       "!**/coverage",
       "!**/.vitest",
       "!docs/openapi.json",
+      "!apps/web/src/services/api.generated.ts",
       "!**/*.md",
       "!pnpm-lock.yaml"
     ]
   },
+  "overrides": [
+    {
+      "includes": ["apps/web/src/pages/**", "!apps/web/src/pages/**/*.spec.{ts,tsx}"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noNamespaceImport": "error"
+          },
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "paths": {
+                  "rxjs": "Templates contain no logic (CLAUDE.md convention 1): subscribe through useObservable and move the pipeline into a view-model.",
+                  "react": {
+                    "importNames": [
+                      "default",
+                      "useState",
+                      "useEffect",
+                      "useReducer",
+                      "useLayoutEffect",
+                      "useRef",
+                      "useMemo",
+                      "useCallback",
+                      "useSyncExternalStore",
+                      "useContext",
+                      "use",
+                      "useTransition",
+                      "useDeferredValue",
+                      "useActionState",
+                      "useOptimistic",
+                      "useImperativeHandle",
+                      "useInsertionEffect"
+                    ],
+                    "message": "Templates contain no logic (CLAUDE.md convention 1): state and effects live in a view-model; bind with useObservable and useViewModel."
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "formatter": {
     "enabled": true,
     "indentStyle": "space",

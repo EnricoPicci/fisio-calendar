@@ -250,11 +250,11 @@
 
 **Why:** OAC signing behaviour `always` overwrites the viewer's `Authorization` header with CloudFront's SigV4 signature. `no-override` passes it unsigned, so the `AWS_IAM` Function URL refuses it, and `always-amz-auth` is valid only for Lambda Web Function origins (AWS docs: "Restrict access to an AWS Lambda function URL origin", `OriginAccessControlConfig.signingBehavior`). As designed (§8.2 bearer in `Authorization`, §9.1 OAC + IAM Function URL), every member and therapist route would answer 401 in `dev`/`prod`, while every local spec passes. It fails closed.
 
-**Context:** Red-team finding in the WP0.4 `/ship` review, verified against the AWS docs. The decision touches `infra/` and the SPA, so it was deferred (CLAUDE.md: ask before changing `infra/`; never widen a WP). Architecture §9.1 carries an open-decision note.
+**Context:** Red-team finding in the WP0.4 `/ship` review, verified against the AWS docs. The decision touches `infra/` and the SPA, so it was deferred (CLAUDE.md: ask before changing `infra/`; never widen a WP). Architecture §9.1 carries an open-decision note. WP0.7 shipped the SPA `ApiClient` with the token in `Authorization` as designed, named once by `AUTHORIZATION_HEADER` in `apps/web/src/services/api-client.ts`, so the SPA side of the decision is a one-constant change (plus the API's cloud read).
 
 **Effort:** S (code) once decided
 **Priority:** P1
-**Depends on:** Must be settled before WP0.9 (CDK `App` stack) and WP0.7 (SPA `ApiClient`).
+**Depends on:** Must be settled before WP0.9 (CDK `App` stack); WP0.7 is done on the local assumption.
 
 ### Email case and id format across Cognito and the auth emulator
 
@@ -432,9 +432,9 @@
 
 **What:** Pin the app client's refresh-token rotation grace period (`RetryGracePeriodSeconds`) in WP0.9. Then either give the emulator the same window, with a contract row ("a refresh token reused within the grace period succeeds once"), or have the SPA serialise refreshes across tabs (a Web Lock or BroadcastChannel) and cover that with a journey.
 
-**Why:** The emulator spends a refresh token on first use. Two tabs, or a retry after a timeout, that refresh with the same token sign the user out locally, while Cognito with a grace period would accept both. The SPA's refresh handling would be built against the stricter rule.
+**Why:** The emulator spends a refresh token on first use. Two tabs, or a retry after a timeout, that refresh with the same token sign the user out locally, while Cognito with a grace period would accept both. The SPA's refresh handling would be built against the stricter rule. On the Amplify side the stakes are higher: Amplify's token orchestrator treats `RefreshTokenReuseException` as an authentication error and clears its token store (shared by every tab through `localStorage`), so with rotation on, the losing tab's refresh wipes the winning tab's pair and the device is signed out at the next reload. The local service's spent-marker protocol has no Amplify counterpart, so a cross-tab serialisation (a Web Lock around `refresh()`) or no rotation is a prerequisite of enabling rotation, not an option.
 
-**Context:** Red-team finding in the WP0.5 `/review`.
+**Context:** Red-team finding in the WP0.5 `/review`; the Amplify `clearTokens` behaviour is an adversarial finding of the WP0.7 ship review.
 
 **Effort:** S
 **Priority:** P3
@@ -524,6 +524,18 @@
 **Priority:** P3
 **Depends on:** WP0.9.
 
+### The emulator has no sign-out route
+
+**What:** Add a `POST /signout {refreshToken}` route to the auth emulator that retires the refresh record (and, for a global sign-out, bumps the token generation), call it best-effort from `LocalAuthService.signOut()` before clearing storage, and add a local-service spec row: after `signOut()`, a `refresh()` with the old pair is refused by the emulator, not only by storage.
+
+**Why:** `AmplifyAuthService.signOut()` revokes at Cognito, while the local sign-out only clears storage: the emulator's refresh token stays live for its whole lifetime, so every local journey about "sign-out ends the device" passes on the SPA's own storage checks and never proves the provider-refused path.
+
+**Context:** Red-team finding of the third WP0.7 ship-review pass.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
 ### A spec for the bootstrap CLI's run
 
 **What:** Let `runBootstrapCli` take its adapters (or an adapters factory), then spec exit 0 with the printed link, the "no setup link" and "re-enabled" lines, and exit 1 on a `BootstrapError`.
@@ -537,6 +549,186 @@
 **Depends on:** None.
 
 ## Web app
+
+### Amplify sign-in flows are unverified until the `dev` pool exists
+
+**What:** Run the WP0.10 spike against `AmplifyAuthService` (`apps/web/src/services/amplify-auth-service.ts`): `signIn` with `USER_AUTH`/`EMAIL_OTP` for an `AdminCreateUser` client, `PASSWORD_SRP` then `CONFIRM_SIGN_IN_WITH_TOTP_CODE` for the therapist, the setup link (`PASSWORD` with the temporary password → `NEW_PASSWORD_REQUIRED` → `setUpTOTP` → `verifyTOTPSetup` → `updateMFAPreference`), and the exception names the service maps (`CodeMismatchException`, `NotAuthorizedException`, `TooManyRequestsException`, `TokenRevokedException`, `RefreshTokenReuseException`, `UserLambdaValidationException`, Amplify's own `NetworkError`, and `UserAlreadyAuthenticatedException`, which the service answers with a sign-out and one retry). Check that the app client has "prevent user existence errors" on, so an unknown email in the code flow does not surface as `UserNotFoundException`, and that `fetchAuthSession()` on an expired access token while offline rejects the way the service expects (the session then shows the sign-in page and the next sign-in attempt recovers through the retry). Check too that the pool does not require MFA at pool level: `startSetup()` expects `confirmSignIn` with the new password to complete the sign-in (`isSignedIn`), then enrols with `setUpTOTP`; a pool that answers `CONTINUE_SIGN_IN_WITH_TOTP_SETUP` instead would read as a used link (`not_authorized`) after the temporary password was spent.
+
+**Why:** WP0.7 wrote the Amplify service from the documented API (implementation plan §9, spike row WP0.7); only the local service runs in the suite. A wrong step name or exception name shows up as a sign-in that never completes on `dev`.
+
+**Context:** Fallback agreed in the plan: the Cognito SDK (`InitiateAuth`/`RespondToAuthChallenge`) behind the same `AuthService` port. The `restore()`/`refresh()` pair relies on Amplify's own token store and `fetchAuthSession({ forceRefresh })`.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (pool), WP0.10 (spike).
+
+### The SPA does not react to a 401 and trusts the device clock for token freshness
+
+**What:** When the API answers `401 unauthenticated` with `WWW-Authenticate: Bearer error="invalid_token"` (architecture §8.2), force one refresh and retry the request once, then end the session; when it answers `403 forbidden` for a blocked client, end the session with an explanation (J7). Also decide what a device clock far from the server's does: a clock behind sends dead tokens until the skew is passed (every request 401s, no refresh), a clock ahead by more than the token lifetime refreshes on every request.
+
+**Why:** `SessionViewModel` refreshes only by comparing `exp` with the `Clock`; `OpenApiClient` surfaces 401/403 as an `error$` message and nothing else, so a blocked client or a global sign-out keeps the home page until the token nears expiry.
+
+**Context:** Adversarial finding of the WP0.7 review. J7 (WP0.8) owns the block explanation; the 401 retry fits the `ApiClient` (`#call`) and the session (`accessToken$`).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.8 (J7).
+
+### An offline app start on the cloud build shows the sign-in page instead of waiting
+
+**What:** Let `SessionViewModel.restore()` tell a `NetworkError` from "nobody signed in": keep `page$` on `loading` with an offline notice and a retry (or re-run `restore()` on the `online` event) instead of showing the sign-in page while a valid refresh token sits in Amplify's store.
+
+**Why:** Amplify's `fetchAuthSession()` rejects when the cached access token is expired and the refresh cannot reach Cognito (network error); `restore()` swallows every failure as nobody (`console.warn` only) and runs once, so a client opening the app without signal more than an hour after the last use sees the sign-in page and has no way back but a reload with signal. The local service restores from storage without a request, so the suite never shows it.
+
+**Context:** Adversarial finding of the WP0.7 ship review. Related: the 401 and clock-skew entry above.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9 (pool), WP0.10 (spike).
+
+### A therapist with a password but no TOTP cannot finish the enrolment from the SPA
+
+**What:** Give a signed-in therapist whose TOTP is not enabled a way to finish the enrolment (`setUpTOTP` → `verifyTOTPSetup` → `updateMFAPreference`) instead of a `not_authorized` refusal, or at least a dedicated message pointing at a bootstrap re-run.
+
+**Why:** On Cognito the setup link's password step completes before the enrolment; if the tab closes, `verifyTOTPSetup` succeeds but `updateMFAPreference` fails, or a lockout hits, she has a password and no MFA. `AmplifyAuthService` then refuses every password sign-in (TOTP guard) with the wrong-password sentence, and the temporary password is spent, so only `bootstrap:therapist --stage dev` recovers. The emulator retires the setup code only at `verifyTotpSetup`, so the local suite cannot show it.
+
+**Context:** Adversarial finding of the WP0.7 ship review. Related: server-side TOTP control (below).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (pool), WP0.10 (spike).
+
+### Sign-out does not reach the other tabs
+
+**What:** Observe a sign-out made in another tab (a `storage` event on the local tokens key; Amplify's Hub `signedOut` / `tokenRefresh_failure` events) and end this tab's session with `signedOut$`.
+
+**Why:** `signOut()` clears the provider's storage and this tab's session; another open tab keeps its in-memory access token and keeps calling the API until the token nears expiry (up to an hour). On a shared device, "Esci" in one tab leaves the other usable. The local service already refuses to write a rotated pair back after another tab signed out; the in-memory session is the remaining half.
+
+**Context:** Security finding of the WP0.7 ship review.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.8 (a two-session journey to prove it).
+
+### Where the cloud build keeps its tokens
+
+**What:** Decide whether Amplify's default token store (`localStorage`, including the 30-day rotating refresh token) is acceptable under WP0.9's CSP, or switch `configureAmplify` to `cognitoUserPoolsTokenProvider.setKeyValueStorage(...)` with `sessionStorage` or cookie storage; record the choice in architecture §8.1.
+
+**Why:** The local build's `localStorage` tokens were known; the cloud build is not exempt, Amplify's `defaultStorage` is `localStorage` in a browser.
+
+**Context:** Security finding of the WP0.7 ship review.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9.
+
+### No bounded wait on sign-in, setup and API round trips
+
+**What:** Give `FormViewModel.attempt()` and the session's shared refresh a bounded wait (`timeout()` in RxJS, or `AbortSignal.timeout` in `fetchOrNetworkError`) that fails as a `NetworkError`, so a stalled mobile connection shows the offline message and a retry instead of a form that stays busy (its links are no-ops while busy) or a refresh that blocks every later request.
+
+**Why:** Browser `fetch` and Amplify calls have no timeout; the WP0.7 review made forms ignore link clicks while busy, which turns a hung request into a page with no way out but a reload.
+
+**Context:** Red-team finding of the WP0.7 review. The emulator spec harness can simulate a never-answering fetch.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
+### Server-side control for a therapist session without TOTP
+
+**What:** Refuse therapist access tokens whose user has no TOTP enrolled, in the pre-token-generation trigger (WP0.9) or in the API's per-request check (`UserMFASettingList` through the Cognito adapter), so the SPA's `AmplifyAuthService` guard (`enrolledOnly`: sign out a therapist session whose `fetchMFAPreference` lacks TOTP) is defence in depth and not the only control.
+
+**Why:** With MFA optional (§8.1), Cognito completes the setup link's password step before the enrolment and Amplify keeps those tokens; a therapist who stops after the password has a single-factor session until the SPA notices (§15).
+
+**Context:** Security finding of the WP0.7 review; the SPA side landed in WP0.7 with a mocked-SDK spec.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (triggers), WP0.10 (verify on `dev`).
+
+### Sign-in policy figures live in the strings
+
+**What:** Put the policy figures the UI sentences quote (8-digit code, 5 minutes, 15-minute lockout, 12-character password) in one place in `@fisio/contracts` (next to `MIN_PASSWORD_LENGTH`) and build `strings.auth.codeSent`, `too_many_attempts`, `invalid_password` and `setup.passwordLabel` from it; have the emulator config and, later, the Cognito pool read the same constants.
+
+**Why:** A policy change leaves the Italian text silently wrong.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### Local stack constants are repeated across packages
+
+**What:** The emulator issuer (`LOCAL_AUTH_ISSUER` in the SPA, `AUTH_ISSUER` in the API's local defaults, `DEFAULT_EMULATOR_CONFIG.issuer`), the web origin/port and the API port (`vite.config.ts`, `LOCAL_WEB_ORIGINS`), `/api/v1` (`API_BASE_PATH`, `API_BASE_URL`) and the TOTP issuer label (`'Fisio Calendar'` in the Amplify service and the emulator) are literals in two or three places. Expose a dependency-free constants module (`@fisio/contracts`, or an `@fisio/auth-emulator/constants` subpath the browser bundle can import) or add specs asserting they agree.
+
+**Why:** Nothing checks they agree; the browser bundle cannot import the emulator package.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### The web app renders at browser typography defaults
+
+**What:** Pick a typeface and the accent/selection/focus colours (`@theme` in `styles.css`) once the pages of M1 exist; WP0.7 left `system-ui` and the Tailwind defaults on purpose.
+
+**Why:** Design review note (WP0.7): a skeleton that stays the de facto theme.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** M1 pages.
+
+### The sign-in page does not say why a session ended
+
+**What:** Show a notice on the sign-in page when `SessionViewModel.signedOut$` emitted `refresh_refused` (the device was signed out: blocked, global sign-out, refresh token expired), and later the explanation J7 expects after a block. `signedOut$` is a hot stream, so the notice needs a replayed "last reason" the sign-in view-model can read.
+
+**Why:** Today the shell silently swaps the home page for the sign-in page; a client who was signed out by a block sees a blank sign-in form.
+
+**Context:** WP0.7 kept the session streams minimal; the journey J7 (WP0.8) asserts `signedOut$` itself, not the UI.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.8 (J7 defines the explanation).
+
+### TOTP enrolment shows the secret as text, no QR code
+
+**What:** Render the `otpauth://` URI of the setup page as a QR code (a small dependency, or an inline SVG encoder) next to the manual key.
+
+**Why:** Authenticator apps are usually on the phone while the setup link is opened on a laptop; typing a 32-character base32 key by hand is error-prone. The `otpauth://` link works only when the page is opened on the phone itself.
+
+**Context:** `apps/web/src/pages/SetupPage.tsx`, `SetupViewModel.enrolment$`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
+### SPA bundle carries Zod and the domain's date library
+
+**What:** Measure what `@fisio/contracts` (Zod schemas, used by `OpenApiClient` to parse responses) and `@fisio/domain` (date-fns + tz) add to the main chunk (413 kB before gzip after WP0.7, 128 kB gzipped) and decide: keep response parsing with Zod, parse with lighter checks, or split the contracts package so the SPA imports only the types and the strings.
+
+**Why:** Clients open the calendar on phones; the bundle should stay small. The parsing was chosen so a server that drifts from the contract fails at the client boundary. Two more build-time items for the cloud build (WP0.9): the Amplify chunk is requested only after the main chunk has executed (a `modulepreload` hint when `VITE_AUTH=amplify`, or a build-time static import, removes one round trip from the first paint), and long-lived dependencies (react, rxjs, zod) share the app chunk's hash, so every deploy re-downloads them (a vendor chunk through `output.advancedChunks`/`manualChunks` keeps them cached).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
+### `openapi-typescript` needs the TypeScript 5 compiler API
+
+**What:** Drop `tools/openapi-types` (the generator package that pins `typescript@5` only for itself) once `openapi-typescript` runs on the TypeScript 7 compiler the repository uses, and move its two lines into `apps/web`.
+
+**Why:** `openapi-typescript` prints its output through `ts.factory`, which the TypeScript 7 npm package does not provide; the pinned copy is the only TypeScript 5 in the workspace.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** Upstream support.
+
+### `useViewModel` and React `StrictMode`
+
+**What:** Make `useViewModel` survive StrictMode's simulated unmount (create the view-model in a ref and re-create it when the effect finds it disposed, or dispose on a debounce), then enable `StrictMode` in `main.tsx` for development.
+
+**Why:** StrictMode's double effect run disposes the page's view-model while it is still rendered, so WP0.7 left it off and the usual StrictMode checks (impure renders, missing cleanups) do not run.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
 
 ### Installable PWA
 
@@ -561,6 +753,92 @@
 **Effort:** M
 **Priority:** P4
 **Depends on:** A real request from the therapist.
+
+### A refresh may adopt another user's tokens on a shared device
+
+**What:** Compare the `sub` claim of the tokens a refresh hands over with the session's current one in `SessionViewModel` (`accessToken$`), and end the session (`refresh_refused`) on a mismatch; in `LocalAuthService.refresh()`, adopt another tab's pair only when its `sub` matches the pair this call used.
+
+**Why:** Tab A refreshes while tab B signs out and signs in as someone else (a shared phone, the therapist on a client's device): `LocalAuthService` adopts the pair it finds in storage and `accept()` checks only that the role is known, so tab A keeps showing A's greeting while every request carries B's bearer; with different roles `page$` flips to the other home with no `signedOut$`. Amplify's `fetchAuthSession({ forceRefresh: true })` refreshes whoever its `LastAuthUser` key names, so the cloud build has the same hole.
+
+**Context:** Adversarial finding of the third WP0.7 ship-review pass. Distinct from "Sign-out does not reach the other tabs" (above), which leaves tab A usable as A.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None.
+
+### The password-only therapist refusal lives only in the Amplify service
+
+**What:** Decide where "a password alone never counts as a finished setup" (architecture §15) is enforced on the SPA side: refuse a `signed_in` answer to `signInWithPassword` whose access token names the therapist in the port-independent layer (`SignInViewModel` or `SessionViewModel.start()`, signing the provider out as `start()` already does for an unknown role), or keep it in each `AuthService` and make the emulator refuse it too. Flip the local-service spec row "a therapist without TOTP enabled signs in at once" and the sign-in spec row "a password sign-in without an MFA step signs in at once" accordingly.
+
+**Why:** `AmplifyAuthService` refuses a therapist without TOTP (`#enrolledOnly`), `LocalAuthService` passes the tokens straight through and `SignInViewModel` accepts them, so the two implementations disagree on a security property and the headless journeys (WP0.8) will run against the permissive one; a regression in the cloud guard is invisible to `pnpm test`.
+
+**Context:** Adversarial finding of the third WP0.7 ship-review pass. Related: "Server-side control for a therapist session without TOTP" (above). Settle before WP0.8 builds journeys on the current behaviour.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** None.
+
+### The production bundle is first exercised after a deploy
+
+**What:** Validate `VITE_AUTH` and `VITE_COGNITO_*` in `vite.config.ts` (`loadEnv`) so a production build without them fails at build time, not at app start on the user's device (`readConfig` refuses it in the browser today); run `vite build` as a step of `pnpm deploy:dev` before the cloud diff, or as a bundle smoke spec; give `vite preview` the same `/api` proxy as the dev server (today every `/api/v1` call of the previewed bundle is a 404 from the preview server); and document that testing on a phone over the LAN needs a tunnel or an https origin (Vite binds `127.0.0.1`, the emulator's `LOCAL_WEB_ORIGINS` refuses other origins, `LocalAuthService` posts to the loopback issuer, and `crypto.subtle` is missing on a non-secure origin).
+
+**Why:** `pnpm test` is the only definition of green and never runs `vite build`, so a bundle that fails to build or to boot is first seen after a deploy; the preview script and a phone on the LAN fail for reasons unrelated to the code under test.
+
+**Context:** Red-team findings of the third WP0.7 ship-review pass.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (cloud build), WP0.10 (dev smoke).
+
+### Follow-ups from the third WP0.7 ship-review pass
+
+**What:** Small corrections left out of the branch to keep the review converged: the `SessionViewModel` class doc still says a refresh refused for a passing reason "yields `null`" (it errors the request with the refusal); the `MemoryStorage` docstring omits its production role (the fallback when the browser blocks site storage); `fakeTokens` carries an `email` parameter no caller passes; `AppDeps.clock` has no consumer yet (reserved for the calendar view-models); `jwt.ts` says the SPA reads `email`, but only `role` and `exp` are read; the `signedOut$` comment names a shell notice that does not exist yet (see "The sign-in page does not say why a session ended"); `BUTTON` and `LINK` keep their hover feedback while disabled (`enabled:hover:` or `disabled:pointer-events-none`), and `LINK` stretches to the form's width in `flex-col` forms (`self-start`); `useObservable` renders `initial` once before subscribing (an extra render; the loading page flashes after the setup page navigates home); the `#enrolledToken` cache in `AmplifyAuthService` never hits in the SPA's call graph (one `restore()` per load, every refresh rotates); the two-tab refresh spec title claims more than it asserts; `#confirm()` with `confirmSignIn` resolving `isSignedIn: false` has no spec row; the Biome fence under `src/pages` matches exact specifiers, so `rxjs/operators` and the other `rxjs/*` subpaths pass it; four state-matrix cells of `LocalAuthService` and `AmplifyAuthService` (a refusal landing after another tab rotated, a refusal landing on a spent marker, `updateMFAPreference` refused as an `AuthError`, the setup sink's refusal) have no deterministic spec.
+
+**Why:** Each is a one-line or one-spec change; together they are the remaining informational findings of the third review pass, recorded here instead of a fourth fixing cycle.
+
+**Context:** Maintainability, design, performance, simplification, testing, state-machines and adversarial findings of the third WP0.7 ship-review pass (2026-10-25).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
+### A sign-out racing a forced refresh leaves the device signed in at Cognito
+
+**What:** Make `SessionViewModel.signOut()` wait for a pending shared refresh to settle (result ignored, bounded once the bounded-wait entry lands) before calling `auth.signOut()`, or serialise the two inside `AmplifyAuthService`; spec the cell (refresh in flight, `signOut()`, the refresh lands: `restore()` on the next load finds nobody).
+
+**Why:** Amplify's token orchestrator stores the refreshed pair after its round trip with no check that the store was cleared meanwhile, and `signOut()` revokes the refresh token it loaded before the race. A user who taps "Esci" while a forced refresh is in flight sees the sign-in page, but the next page load restores a live pair; with refresh-token rotation on, the newly issued refresh token was never revoked. `LocalAuthService` guards this with its `#signedOut` flag; the Amplify path has no counterpart. Unverifiable before the `dev` pool exists.
+
+**Context:** Adversarial finding of the fourth WP0.7 ship-review pass. Related: "No bounded wait on sign-in, setup and API round trips" (a hung refresh must not hang the sign-out).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (pool), WP0.10 (spike).
+
+### The setup link evicts a live session at Cognito without ending it in the app
+
+**What:** Decide what `/setup` does while `page$` names a role: end the session through `SessionViewModel` with a reason before starting the setup, or refuse the page until the user signs out. Spec the choice.
+
+**Why:** `App.tsx` serves `/setup` whatever `page$` says, so `startSetup()` is the one sign-in call that can run with a live session; on Cognito `freshSignIn` answers `UserAlreadyAuthenticatedException` by signing out and retrying, so a signed-in therapist who reopens a used setup link has her refresh token revoked and Amplify's store cleared, keeps working on the in-memory tokens, and is ended with `refresh_refused` at the next refresh with no explanation. A client signed in on a shared device meets the same fate when the therapist uses it for setup. `LocalAuthService.startSetup()` never touches storage, so the suite cannot show it.
+
+**Context:** Adversarial finding of the fourth WP0.7 ship-review pass.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9 (pool).
+
+### Form ergonomics the pages of M1 should settle
+
+**What:** When `step$` swaps a form (email → code, password → TOTP, setup password → TOTP), focus the first input of the new form (`autoFocus` is a binding attribute); give `INPUT` a background (`bg-white`) so a field reads as a well against the `stone-50` page; give the TOTP secret chip a visible edge (`bg-stone-100` on `stone-50` is a 1.03:1 contrast) and wider tracking; offer a show/hide toggle on the password fields, at least on the setup page, where a typo locks the therapist into a password she does not know (`revealPassword$` on the view-model keeps the template logic-free). Also: a spec row for the setup page's `disabled={busy}` submit buttons, a spec row for `invalid_session` as an ending refresh refusal (the `ENDING_REFUSALS` set has two members and one row), the local spent marker written only for `not_authorized` (today any `AuthError` on `/refresh` writes it, latent while the emulator refuses only with that code), a generation guard in `signOut()` so a late provider answer cannot end a session started meanwhile, and the stale landing of a non-ending refresh failure specced. `LOCAL_AUTH_ISSUER` should be tied to the emulator's default issuer by a spec (`DEFAULT_EMULATOR_CONFIG.issuer` from `@fisio/auth-emulator`), see "Local stack constants are repeated across packages"; the password length and the OTP figures in the Italian strings belong with `MIN_PASSWORD_LENGTH`, see "Sign-in policy figures live in the strings".
+
+Red-team items of the same pass: an error boundary around `<App/>` (or `onUncaughtError` on `createRoot`) rendering the same unexpected-error page and retry as the boot failure, since a render-time throw today leaves a blank page; `maxLength` and `pattern` on the three code inputs, or the emulator's `validation_failed` and Cognito's `InvalidParameterException` mapped to `code_mismatch` on the answer routes; the `src/pages` fence inverted to an allowlist of React imports (class components, `createContext`, `useId`, `startTransition` and future hooks pass the denylist) with `react-dom` and the logic-bearing react-router hooks restricted; the pre-gate lanes of the two home templates pointed at `HomePages.spec.tsx` and `main.tsx` at a future boot spec instead of `[]`; the refused-address short-circuit in `AmplifyAuthService.confirmCode()` (no network request, instant answer) is observable in the Network tab where the emulator answers with a real round trip, so keep the round-trip shape identical across the two services; and a therapist token obtained through the client code flow (`EMAIL_OTP`, before the WP0.9 trigger refuses it) passes the TOTP-enabled guard without TOTP having been used, so refuse a therapist role from `confirmCode()` as defence in depth (see also "The password-only therapist refusal lives only in the Amplify service").
+
+**Why:** Design, testing, state-machines, maintainability, red-team and adversarial findings of the fourth WP0.7 ship-review pass, all informational; recorded here instead of a further fixing cycle so the branch could converge.
+
+**Context:** Fourth WP0.7 ship-review pass (2026-10-25). The offline-restore entry above also applies to every offline start for the therapist: `#enrolledOnly` calls `fetchMFAPreference()` on `restore()` even with a valid cached access token.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
 
 ## Infrastructure
 

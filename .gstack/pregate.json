@@ -173,7 +173,22 @@
     "tools/local/seed/package.json": ["tools/local/seed/test/seed.spec.ts"],
     "tools/local/seed/tsconfig.json": ["tools/local/seed/test/seed.spec.ts"],
     "tools/local/seed/vitest.config.ts": ["tools/local/seed/test/seed.spec.ts"],
-    "tools/scripts/dev.mjs": []
+    "tools/scripts/dev.mjs": [],
+    "apps/web/index.html": [],
+    "apps/web/vite.config.ts": [],
+    "apps/web/tsconfig.spec.json": [],
+    "apps/web/src/styles.css": [],
+    "apps/web/src/main.tsx": [],
+    "apps/web/src/app/App.tsx": ["apps/web/src/app/App.spec.tsx"],
+    "apps/web/src/pages/LoadingPage.tsx": [],
+    "apps/web/src/pages/ClientHomePage.tsx": ["apps/web/src/viewmodels/HomeViewModel.spec.ts"],
+    "apps/web/src/pages/TherapistHomePage.tsx": ["apps/web/src/viewmodels/HomeViewModel.spec.ts"],
+    "apps/web/src/vite-env.d.ts": ["apps/web/src/app/config.spec.ts"],
+    "tools/openapi-types/package.json": [],
+    "tools/openapi-types/tsconfig.json": [],
+    "tools/openapi-types/generate.mjs": ["apps/web/src/services/api.generated.spec.ts"],
+    "tools/openapi-types/src/index.mjs": ["apps/web/src/services/api.generated.spec.ts"],
+    "tools/openapi-types/src/index.d.ts": ["apps/web/src/services/api.generated.spec.ts"]
   },
   "guards": [
     {
