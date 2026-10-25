@@ -14,38 +14,70 @@
 **Priority:** P3
 **Depends on:** v1 launched; the therapist's decision on who pays per message and whether reminders or only cancellations go through WhatsApp.
 
-### Fence notifier writes on the delivery attempt
-
-**What:** Make the notifier's conditional writes for `markSent`, `markFailedAttempt` and `sweepStale` check a per-attempt token (`updatedAt` from `startDelivery`, or a new `attemptToken` in `DeliveryState`), not only `status = sending`. Add a spec for the late-completion race.
-
-**Why:** The domain transitions in `packages/domain/src/notification-state.ts` check status only. A slow notifier whose item was swept and re-sent sees `sending` again, so its late result can overwrite the second attempt: a duplicate email, a lost outcome or a phantom failed attempt.
-
-**Context:** Found by the red team in the WP0.2 `/ship` review. The fix belongs where the conditional `UpdateItem` is written (notification repository, WP0.6). Fencing on `updatedAt` needs no domain change; a token field does.
-
-**Effort:** S
-**Priority:** P1
-**Depends on:** WP0.6.
-
 ### Notifier edge cases from the WP0.2 review
 
-**What:** Handle these cases when the notifier applies the delivery state machine:
-- Do not raise `alertTherapist` for the therapist's own FAIL, alert or DIGEST notifications, so a broken SES account does not loop; rely on the failed-notifications alarm instead.
-- Make template-render errors and SES rejections such as `MessageRejected` permanent (`PermanentError`), with one channel spec per SES error name; `classifyError` treats anything unknown as retryable.
-- Parse stored `nextAttemptAt` and `updatedAt` through `IsoDateTimeSchema` at the repository boundary; a malformed value makes `isDue`/`isStale` false forever and the item sticks silently.
-- When a transition drops an attribute (`lastError` in `markSent`; `providerMessageId` and `sentAt` in `markFailedAttempt` and `sweepStale`; `providerMessageId` when `markSent` gets no usable id), the repository must `REMOVE` every attribute absent from the returned state; an `UpdateItem SET` of the returned fields leaves the old value in DynamoDB. Cover it with an API spec on DynamoDB Local (a stale id on a sending item, a retryable failure, then no `providerMessageId` stored).
-- Redact or classify provider error text before it reaches `markFailedAttempt` (the domain only caps it at 500 characters): SES and SDK messages can carry recipient addresses, request ids or ARNs, and `lastError` is stored and shown on the dashboard. Log the full message instead.
+**What:** Handle these remaining cases when the notifier applies the delivery state machine:
+- Do not raise the therapist alert (the FAIL email, WP2.5) for the therapist's own FAIL, alert or DIGEST notifications, so a broken SES account does not loop; rely on the failed-notifications alarm instead.
+- Redact provider error text before it reaches `markFailedAttempt`. The SMTP and SES adapters already reduce it to `SMTP <code> at <command>` / `SES <error name>`; any future adapter must do the same, and the notifier should cap or classify unknown error text instead of storing it (it is shown on the dashboard).
 - A manual retry (T9) of a failure older than about a month leaves the item in its creation-month partition, which deliver-due no longer queries (§6.3), so it never sends and never alerts. Re-home the item to the current month in the retry use case, or refuse the retry with an error code.
-- `sweepStale` throws `InvalidTransitionError` for an item that is not stale by its own clock reading (the DynamoDB filter `updatedAt < :stale` and the domain's `now` can disagree at the boundary). Catch it per item in the jobs handler so one item cannot abort the sweep, and keep the notifier Lambda timeout plus SES SDK retries well under `SENDING_STALE_AFTER_MINUTES` (an infra assertion), or the sweep re-queues a send that is still running and the email goes out twice.
-- Channel adapters pass `markSent` a provider id that is a string or `undefined`, never invented and never another type: `markSent` runs after the provider accepted, and a non-string would make its `.trim()` throw, leaving the item in `sending` for the sweep to send again. Add a `typeof` guard in `markSent` (and store the trimmed id) when the adapter lands, with a spec that passes a non-string id.
+- Keep the notifier Lambda timeout plus SES SDK retries well under `SENDING_STALE_AFTER_MINUTES` (an infra assertion, WP0.9), or the sweep re-queues a send that is still running and the email goes out twice.
 - A confirmation or reminder still in back-off can go out after the booking or slot was cancelled. Give items an expiry or a superseded check so `startDelivery` callers skip obsolete messages; cover it with a journey (cancel while CONF is in back-off: exactly one CANC, no later CONF).
 
-**Why:** Each one is correct in the pure domain but fails at the integration boundary, where nothing in WP0.2 can test it.
+**Why:** Each one is correct in the pure domain but fails at the integration boundary.
 
-**Context:** Red-team findings from the WP0.2 `/ship` review, deferred because they belong to the notifier and repository code (CLAUDE.md: never widen a work package). Cover each with an API spec on DynamoDB Local.
+**Context:** Red-team findings from the WP0.2 `/ship` review. WP0.6 closed the rest: the late-result fence on `updatedAt`, `REMOVE` of dropped attributes, schema parsing at the repository boundary (corrupt items are logged and skipped), the per-item sweep re-check, the `markSent` id guard, and SES error classification per error name.
 
 **Effort:** M
 **Priority:** P2
-**Depends on:** WP0.6.
+**Depends on:** WP1.3 (CONF/CANC), WP2.5 (FAIL alert), WP0.9 (infra assertions).
+
+### Validate template params when the outbox item is written
+
+**What:** Check a notification's `params` against its template's schema in `NotificationRepository.newItem` (export a `validateTemplateParams(template, params)` from `packages/contracts/src/templates.ts`), so a mismatch fails the use case's transaction instead of the delivery.
+
+**Why:** `newItem` only checks `params` as a record. A bad param is found by the notifier after the API answered 201: the item goes straight to `failed` and the client never gets the email. The invitation's bounds match `AddClientRequest` today; confirmations and reminders built from booking data will not be checked that way.
+
+**Context:** Red-team finding in the WP0.6 `/review`. Lands best with WP1.3, the second template.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP1.3.
+
+### Corrupt notification items need a terminal state
+
+**What:** Move an item that fails its schema to `failed` (a conditional update that only needs the key) and raise the `notification_failed` alert once, or make the failed-notifications alarm (WP2.7) count `notification_corrupt` as well.
+
+**Why:** Since WP0.6 a corrupt item is logged and skipped on every path, but it stays `pending` or `sending`: it is logged again every 15 minutes for two months and the therapist is never told that the client's email will not arrive.
+
+**Context:** Red-team and adversarial findings in the WP0.6 `/review`. Corrupt items can only come from a bug or a hand edit, hence P3.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP2.7 (alarm), WP2.5 (FAIL email).
+
+### Erasure must reach the NOTIFICATION copies
+
+**What:** When client erasure lands (§9), purge or redact the client's NOTIFICATION items too: each stores `to` and the template `params` (name, email) for 180 days in month partitions, with no index by `clientId`. Either a sparse GSI on `clientId`, a six-month partition scan in the erasure use case, or storing only `clientId` and resolving the address at send time.
+
+**Why:** Otherwise erased clients' addresses survive in the outbox until TTL.
+
+**Context:** Red-team finding in the WP0.6 `/review`; decide before the first non-invitation template multiplies the copies.
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** the erasure work package.
+
+### A client's first sign-in turns `invited` into `enabled`
+
+**What:** Decide and implement when a client created by `POST /admin/clients` (status `invited`, WP0.6) becomes `enabled`: on the first successful email-OTP sign-in (a Cognito post-authentication trigger in the cloud, the same hook in the auth emulator), or on first `GET /me`. Add the error-code and spec rows to architecture §10.4.
+
+**Why:** WP0.6 creates the client as `invited` with an identity user and sends the invitation, but nothing moves the status on, and the client-status middleware treats `invited` and `enabled` differently. Journey J1 (WP0.8) needs the transition.
+
+**Context:** Found while implementing WP0.6; out of its scope (CLAUDE.md: never widen a work package).
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** WP0.6; needed by WP0.8.
 
 ## API
 
@@ -113,6 +145,102 @@
 **Effort:** S
 **Priority:** P3
 **Depends on:** WP0.4 (zone or date input from requests), WP0.6 (channel adapters).
+
+### Location header and retried adds on `POST /admin/clients`
+
+**What:** Decide the pattern for 201 responses before the next create endpoint: a `Location` header (declared in the OpenAPI route) or a recorded "no Location" rule in §5.2. Also make a retried add after a lost response recognisable: the `client_exists` problem can carry the existing `clientId` (therapist-only route), or the WP1.5 clients view-model reloads the list on 409.
+
+**Why:** `POST /admin/clients` (WP0.6) is the first 201. A phone that loses the response and retries gets 409 for a client that was in fact created.
+
+**Context:** API-contract findings in the WP0.6 `/review`.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP1.5.
+
+### A double tap can answer `client_exists` with no client written
+
+**What:** `addClient` turns `ClientItemBusyError` (the transaction was cancelled with `TransactionConflict`) into `client_exists`, trusting that the other add will commit. DynamoDB does not promise that one of two conflicting transactions wins. If both are cancelled, both answers are 409 and there is no client item and no invitation. Fix: on `ClientItemBusyError`, read the client item with a consistent read. Answer `client_exists` only if the item is there. Otherwise rethrow (a 500 the therapist can retry); the kept identity user is taken over as a left-over on the retry. Add a spec that injects the conflict with nothing committed.
+
+**Why:** The therapist is told the client exists, the client is missing from her list, and the 409 tells her not to try again.
+
+**Context:** Found by the red team in the WP0.6 `/ship` review (cycle 3); deferred by the user. DynamoDB Local serialises transactions, so only an injected spec can reach it.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP1.5.
+
+### A cancelled add can delete a user another add took over
+
+**What:** On a `TransactionCanceledException` that is neither the `ConditionalCheckFailed` on the client item nor a `TransactionConflict` (for example throttling), `addClient` deletes the identity user it created. During a double tap the other add may already have taken that user over as a left-over, and it may still commit. The client item then points at a deleted user: the client cannot sign in, and the next add creates a second user and a second client item for the same email (GSI2 has no uniqueness). Fixes: re-read the client item before deleting (narrows the window), or never delete and let the next add take the user over (closes it, but reverses the WP0.6 "delete only on cancel" decision and leaves an unused user when nobody retries; see "Left-over identity users assume one pool per tenant").
+
+**Why:** A client who can never sign in, plus a duplicate client record on the next add.
+
+**Context:** Found by the red team in the WP0.6 `/ship` review (cycle 3); deferred by the user. DynamoDB Local cannot produce a throttled cancellation.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP1.5.
+
+### Notifier event and log helpers in their own module
+
+**What:** `jobs/tick.ts` imports `describeError` and `NotifierEvent`, and `usecases/add-client.ts` imports `deliverEvent`, from `notify/notifier.ts`, the `Notifier` class file. Move `NotifierEventSchema`, `NotifierEvent` and `deliverEvent` to `notify/events.ts`, and `describeError` to a shared log helper, when WP1.3 adds the second use case that enqueues a delivery.
+
+**Why:** Otherwise every use case that sends an email depends on the notifier's implementation module.
+
+**Context:** Maintainability finding in the WP0.6 `/ship` review (cycle 3); deferred by the user.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP1.3.
+
+### SES `MessageRejected` for an unverified sender fails items for good
+
+**What:** `SesEmailChannel` maps `MessageRejected` to `PermanentError` (`PERMANENT_SES_ERRORS` in `apps/api/src/notify/ses-email-channel.ts`). SES also answers `MessageRejected` when the From identity is no longer verified (DKIM or DNS drift), and on `dev` for sandbox recipients that are not verified. Every send during such a lapse goes to `failed` after one attempt and is never retried after the fix, with one `notification_failed` alarm per client. Check the SESv2 error shapes in the WP0.10 contract run on `dev`. Then either treat `MessageRejected` as retryable or tell its cases apart without storing the message text, and pin the choice in `ses-email-channel.spec.ts`.
+
+**Why:** A configuration fault becomes a permanent delivery failure for every client written during it.
+
+**Context:** Found by the Claude adversarial pass in the WP0.6 `/ship` review (investigate).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.10.
+
+### A short Lambda invoke on the add-client response path
+
+**What:** `addClient` awaits `invoker.invoke('notifier', …)` before answering 201. In the cloud that is a `LambdaClient` with the default three attempts, each up to the 10 s request timeout, so a slow or throttled Invoke API can hold a response whose commit already happened until the API function or CloudFront times out, and the phone sees a 5xx. Give the API's invoker its own client with `maxAttempts: 1` and a short request timeout; the tick delivers whatever the invoke missed.
+
+**Why:** A 5xx for a client that was in fact created, which the retry then answers with 409.
+
+**Context:** Found by the Claude adversarial pass in the WP0.6 `/ship` review.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9.
+
+### `pnpm tick` reads the raw environment
+
+**What:** `apps/api/src/runtime/tick.ts` loads `loadConfig({ ...LOCAL_DEFAULTS, ...process.env })` outside its `try`, without the `definedOnly` filter `createLocalApp` uses. A blank or foreign `STAGE`, `AUTH_ISSUER` or `WEB_ORIGIN` in the shell crashes the tick with a raw `ConfigError` stack, and `STAGE=dev` demands an https `WEB_ORIGIN` the tick never uses. Filter with `definedOnly` and load only the table fields the tick needs.
+
+**Why:** A confusing local failure from settings the command does not use.
+
+**Context:** Found by the Claude adversarial pass in the WP0.6 `/ship` review.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** none.
+
+### A path in `WEB_ORIGIN` is dropped without an error
+
+**What:** `apps/api/src/config.ts` turns `WEB_ORIGIN` into `new URL(url).origin`, so `https://fisio.example/app` is accepted as `https://fisio.example` and invitation links point at the wrong place. Refuse a path, query or fragment other than `/`, with a row in `config.spec.ts`.
+
+**Why:** A misconfigured stage sends working-looking links to the wrong address.
+
+**Context:** Found by the Claude adversarial pass in the WP0.6 `/ship` review.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9.
 
 ## Auth
 
@@ -264,6 +392,30 @@
 **Priority:** P4
 **Depends on:** None.
 
+### A Cognito user without a role group blocks its email
+
+**What:** `CognitoIdentityProvider.createUser` runs `AdminCreateUser`, then `AdminAddUserToGroup`. If the process stops between the two, or if `AdminCreateUser` committed and its retry hit `UsernameExistsException`, the result is a user with no group. `findUserByEmail` then throws "is in no role group", so every `POST /admin/clients` for that email answers 500 until someone repairs the user by hand. The fix: in `addClient`'s `identityUser`, treat a group-less user with no client item as a left-over. Either add it to the `client` group, or delete it and create it again. Alternatively, have `findUserByEmail` return `role: undefined` and let the use case decide.
+
+**Why:** It is a permanent 500 for one address, with no self-recovery.
+
+**Context:** Found by the red team in the WP0.6 `/ship` review. Cognito is not wired until WP0.10, so this cannot happen on the local stack.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.10 (Cognito contract target).
+
+### Left-over identity users assume one pool per tenant
+
+**What:** `addClient` reuses an enabled client-role identity user that has no client item in the calling tenant (a crash between `createUser` and the transaction). With two tenants on one pool, tenant B would adopt tenant A's user. Record the tenant on the identity user (custom attribute, emulator store) and require it to match, or state one-pool-per-tenant in §8 and the config. A disabled left-over user also answers `client_exists` forever.
+
+**Why:** Safe for v1 (one tenant), wrong the day a second tenant shares the pool.
+
+**Context:** Adversarial and red-team findings in the WP0.6 `/review`; related to "One therapist per pool".
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** a second tenant.
+
 ### Sign-in lockout as a denial of service
 
 **What:** Decide how the lockout is keyed. Today five wrong codes or passwords for one email lock that email for 15 minutes, and the code and password flows share the counter. Anyone who knows an address can keep a client, or the therapist, locked out by repeating that every 15 minutes. While locked, a client asking for a code gets the normal answer and no email. Options: count per session or user, keep code failures out of the password flow, add a per-IP WAF rate rule on the sign-in endpoints, and design the SPA's "locked" message with a C1 journey.
@@ -348,18 +500,6 @@
 **Priority:** P2
 **Depends on:** WP0.7, WP0.9.
 
-### Code delivery must not time the answer
-
-**What:** When WP0.6 swaps `consoleChannel` for `SmtpEmailChannel`, stop `startEmailOtp` from awaiting the delivery (hand it to the outbox or fire it off), and run the lockout read for every email, so the answer takes the same time for clients and strangers.
-
-**Why:** Only an enabled client's request waits on the channel; with a real SMTP round trip the response time tells clients from strangers, against C1's no-enumeration rule.
-
-**Context:** Red-team finding in the WP0.5 `/ship` review.
-
-**Effort:** S
-**Priority:** P2
-**Depends on:** WP0.6.
-
 ### Local overrides reach every local process
 
 **What:** Load `.env.local` in `tools/scripts/dev.mjs` before it spawns the processes, and in the seed and `bootstrap:therapist --stage local`, or have them read the table and endpoint from the API's `loadConfig`.
@@ -424,6 +564,78 @@
 
 ## Infrastructure
 
+### Outbox dedup and the tick only see recent months
+
+**What:** `NotificationRepository.newItem` refuses a taken key only inside the UTC month partition of `now`. The same deterministic key written in a later month creates a second item, and the email is sent twice. `deliverDue` and `sweep` scan only the current month and the previous one, so an item made `pending` again later is never picked up by the tick. That includes the T9 manual retry (`resetForManualRetry`) of a failure older than a month. Decide before WP1.3 reuses the repository: either a manual retry rewrites the item into the current month, or it sends a `deliver` event with the item's own ref. Use cases that may rerun across a month boundary (reminders) should check for an existing item first.
+
+**Why:** Neither case can happen with WP0.6's invitation flow, but both become real with confirmations, reminders and manual retry.
+
+**Context:** Found by the red team in the WP0.6 `/ship` review. The `newItem` doc comment now states the month scope.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP1.3, T9.
+
+### Paging of the outbox scan is untested
+
+**What:** `NotificationRepository.#scan`, which backs `findDue` and `findSendingSince`, follows `LastEvaluatedKey` across 1 MB pages, but no spec reaches a second page. DynamoDB Local does not enforce the 1 MB page limit. The WP0.6 `/ship` probe put 1.4 MB in one partition and got a single page with no `LastEvaluatedKey`, so a spec on the local stack cannot fail when the loop breaks. Cover it in the WP0.10 cloud contract run on `dev`, with a real partition over 1 MB, or with a `Limit` that a production caller also needs.
+
+**Why:** If the cursor handling broke, due items past the first megabyte of a busy month would silently never be sent or swept.
+
+**Context:** Found by the testing specialist in the WP0.6 `/ship` review. The user approved a spec, but the probe showed that a local spec cannot fail.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.10.
+
+### SES throttling uses up notification attempts
+
+**What:** The SESv2 client runs with `maxAttempts: 1` (`apps/api/src/runtime/lambda.ts`), so a send is never repeated inside the SDK, where it could deliver twice. The cost is that a throttle (`TooManyRequestsException`) or a refused connection becomes a failed notifier attempt with the 1-5-30-120 minute back-off. A burst of sends can then use up an item's attempts without a real delivery error. Fix: a custom retry strategy (`@smithy/util-retry`, a new dependency) that retries only errors raised before the request reached SES (throttle, connection refused), keeping `maxAttempts: 1` for anything sent.
+
+**Why:** WP2.3's reminders and digest send in bursts, where SES throttling is likely.
+
+**Context:** Found by the red team in the WP0.6 `/ship` review; deferred by the user.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP2.3.
+
+### A per-attempt fence for the notifier's transitions
+
+**What:** Transitions are fenced on `status` plus `updatedAt`, at millisecond resolution. Two notifier runs that claim the same item in the same millisecond after a throttled first attempt can both pass the fence. Separately, `#recordSent` retries its `sent` write across calls: a retry that finds its own earlier commit looks like another writer and logs a false `notification_outcome_lost`. Fix: write a random nonce with each `sending` claim and fence the later transitions on it, so a write is matched to the attempt that made it.
+
+**Why:** Both cases are rare at WP0.6's volume, but bulk sends (WP2.3) run many notifier invocations at once.
+
+**Context:** Found by the red team in the WP0.6 `/ship` review; deferred by the user.
+
+**Effort:** M
+**Priority:** P2
+**Depends on:** WP2.3.
+
+### Notifier Lambda timeout and batch size
+
+**What:** In the CDK App stack (WP0.9) give the notifier an explicit timeout sized for a backlog (for example 60 s), assert that timeout plus the SDK clients' request timeouts (10 s per request, `apps/api/src/runtime/lambda.ts`) stay well under `SENDING_STALE_AFTER_MINUTES`, and consider a small bounded concurrency in `Notifier.#run` (items are processed one after another, three or four round trips each).
+
+**Why:** With the default 3 s timeout a deliver-due run with more than about ten items is cut off mid-batch; the items left in `sending` are swept as failed attempts and can reach the attempt limit without a real delivery error.
+
+**Context:** Performance and adversarial findings in the WP0.6 `/review`; extends the infra assertion already listed under "Notifier edge cases from the WP0.2 review".
+
+**Effort:** S
+**Priority:** P1
+**Depends on:** WP0.9.
+
+### Keep tools/local out of the Lambda bundles
+
+**What:** `apps/api` now depends on `@fisio/local` (nodemailer) and `@fisio/auth-emulator` at runtime, for the local composition root. Make the WP0.9 bundle smoke assert that no `handlers/*` bundle contains them (or a lint rule forbidding the import outside `runtime/local.ts` and `runtime/tick.ts`).
+
+**Why:** Only tree-shaking keeps dev tooling out of the deployed functions today.
+
+**Context:** Adversarial finding in the WP0.6 `/review`. The four dependencies were approved for WP0.6.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9.
+
 ### Review the Claude Code allowlist before AWS credentials exist
 
 **What:** Before WP0.10 puts AWS credentials on the developer machine, revisit `.claude/settings.json`: decide which pre-approved commands that run repo-defined code stay auto-allowed (`pnpm typecheck`/`lint`/`-r build`/`tick`/`local:up`, `docker compose up -d`, `cdk synth`/`diff`, plain `git diff`/`log`/`status` with configured drivers), and keep AWS credentials out of the default shell profile so a session cannot reach the account without a deliberate step (a named profile or `aws sso login` per session).
@@ -442,7 +654,7 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 
 **What:** Decide how `@fisio/domain` and `@fisio/contracts` are consumed outside Vite, Vitest and esbuild: either keep them source-only and require every runner (Lambda bundles, `tools/*` scripts, `pnpm tick`) to bundle or use a TypeScript loader, or add a build step with `exports` pointing at emitted `.js`. Cover the chosen path with the WP0.9 bundle smoke and one `tools` script run under plain `node`.
 
-**Why:** The packages export raw `.ts` with extensionless relative imports (`./time`), and they use TypeScript constructor parameter properties (`readonly date` in `NonexistentLocalTimeError`, `InvalidTimeZoneError`, `InvalidSlotIdError`). Node's type stripping rejects both: extensionless specifiers do not resolve, and parameter properties fail with `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, so a loader that only adds extensions is not enough (consider `erasableSyntaxOnly`).
+**Why:** The packages export raw `.ts` with extensionless relative imports (`./time`), which Node's type stripping does not resolve. The constructor parameter properties that also failed (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`) were removed in WP0.6; `erasableSyntaxOnly` would keep them from coming back.
 
 **Context:** WP0.2 follow-up 15 (adversarial review). Bundled Lambdas are unaffected; scripts run directly are not. WP0.4 runs its two scripts through `tsx` (`pnpm dev`, `pnpm openapi`), a root dev dependency; the WP0.9 bundle smoke and the first `tools/*` script still need the decision.
 
@@ -595,6 +807,8 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 
 ## Completed
 
+- **Fence notifier writes on the delivery attempt** (WP0.6): every notifier transition is a conditional update on `status` and `updatedAt`; spec for the late result after a sweep.
+- **Code delivery must not time the answer** (WP0.6): `startEmailOtp` reads the lockout for every email and fires the code email without awaiting it; spec in the emulator's sign-in specs.
 - **Slot ids in URL paths** (WP0.4): `SlotId.toPathSegment`; route params decode through Hono and `SlotIdSchema`; round-trip spec through the in-process fetch adapter. The CloudFront check and the SPA client remain ("Slot ids through CloudFront and the SPA client").
 - **OpenAPI patterns for refine-only schemas** (WP0.4): `SlotIdSchema`, `IsoDateSchema` and `LocalTimeSchema` carry the domain's shape as `regex` plus an example; the OpenAPI spec asserts the patterns; `conflict_retry_exhausted` no longer names the attempt count.
 - **Map domain time errors to `validation_failed`** (WP0.4): the API error mapper recognises the domain errors by name (`isErrorNamed`, shared with `classifyError`); the time helpers throw `InvalidLocalValueError` for malformed input; `SlotIdSchema`'s refinement never throws, and the API refuses to start without Europe/Rome tz data. The request-path part remains ("Domain time errors with their request path").
