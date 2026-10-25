@@ -1,7 +1,12 @@
 import { type Role, RoleSchema, type TenantId, TenantIdSchema } from '@fisio/contracts';
 import type { Clock } from '@fisio/domain';
 import { JwtVerifier } from 'aws-jwt-verify';
-import { FetchError, JwtBaseError } from 'aws-jwt-verify/error';
+import {
+  FetchError,
+  JwksValidationError,
+  JwkValidationError,
+  JwtBaseError,
+} from 'aws-jwt-verify/error';
 import type { Fetcher } from 'aws-jwt-verify/https';
 import { SimpleJwksCache } from 'aws-jwt-verify/jwk';
 import { z } from 'zod';
@@ -37,6 +42,9 @@ export class InvalidTokenError extends Error {
 
 /** 100 years: disables the library's wall-clock expiry check (see above). */
 const LIBRARY_EXPIRY_CHECK_OFF = 100 * 365 * 24 * 3600;
+
+/** `aws-jwt-verify` errors about the issuer's JWKS, not the token: the JWKS fetch or its content. */
+const SERVER_FAULTS = [FetchError, JwksValidationError, JwkValidationError];
 
 /**
  * Claims the pre-token-generation trigger adds (§8.1): `role` and `tenantId`. `sub` is the
@@ -81,9 +89,12 @@ export function createTokenVerifier(
         payload = await verifier.verify(token);
       } catch (error) {
         if (error instanceof InvalidTokenError) throw error;
-        // An unreachable JWKS is our fault, not the caller's: answering 401 would sign every
-        // user out during an outage, so it propagates as a server error.
-        if (error instanceof JwtBaseError && !(error instanceof FetchError)) {
+        // An unreachable or unparsable JWKS is our fault, not the caller's: answering 401 would
+        // sign every user out during an outage, so it propagates as a server error.
+        if (
+          error instanceof JwtBaseError &&
+          !SERVER_FAULTS.some((fault) => error instanceof fault)
+        ) {
           throw new InvalidTokenError('Token refused by the verifier', { cause: error });
         }
         throw error;

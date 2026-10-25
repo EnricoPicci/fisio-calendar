@@ -35,6 +35,7 @@ export interface CallOptions {
 export interface CallResult {
   readonly status: number;
   readonly contentType: string | null;
+  readonly headers: Headers;
   // biome-ignore lint/suspicious/noExplicitAny: specs read response bodies freely.
   readonly body: any;
 }
@@ -75,6 +76,7 @@ export function apiHarness(options: AppOptions & { issuer?: TestTokenIssuer } = 
     return {
       status: response.status,
       contentType: response.headers.get('content-type'),
+      headers: response.headers,
       body: text ? JSON.parse(text) : undefined,
     };
   }

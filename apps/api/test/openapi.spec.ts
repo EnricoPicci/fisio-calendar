@@ -33,6 +33,33 @@ describe('OpenAPI document (architecture §5.2)', () => {
     ]);
   });
 
+  // Value: protects=each route documents exactly the problem statuses its access level and request validation can give, and the bearer scheme its security names exists, so the SPA's generated client types every error it can receive; fails_when=defineRoute drops validation_failed for validated routes, adds 401/403 to public routes, or the bearerAuth component is no longer registered; why_new=the deployed routes have no validated body and the committed document is regenerated, not reviewed; seam=spec routes (validated member route, public route); no_claim=the codes a handler raises itself (added per route)
+  it('documents the problem statuses of each access level and validation, and the bearer scheme', () => {
+    const { api } = apiHarness({ extend: registerSpecRoutes });
+    const doc = openApiDocument(api);
+    const statuses = (path: string, method: 'get' | 'post') =>
+      Object.keys(doc.paths?.[path]?.[method]?.responses ?? {}).sort();
+    expect(statuses('/health', 'get')).toEqual(['200', '500']);
+    expect(statuses('/spec/therapist-only', 'get')).toEqual(['200', '401', '403', '500']);
+    expect(statuses('/spec/validated/{slotId}', 'post')).toEqual([
+      '200',
+      '400',
+      '401',
+      '403',
+      '500',
+    ]);
+    const badRequest = doc.paths?.['/spec/validated/{slotId}']?.post?.responses?.['400'] as {
+      description: string;
+      content: Record<string, unknown>;
+    };
+    expect(badRequest.description).toContain('`validation_failed`');
+    expect(badRequest.content).toHaveProperty(['application/problem+json']);
+    expect(doc.components?.securitySchemes?.bearerAuth).toMatchObject({
+      type: 'http',
+      scheme: 'bearer',
+    });
+  });
+
   // Value: protects=refined formats keep their shape in the contract, so the SPA's types and docs show a pattern, not a bare string; fails_when=the regex next to a refine is dropped, or a transform/refine breaks generation; why_new=TODOS.md (OpenAPI patterns for refine-only schemas); seam=spec route that uses all three; no_claim=that the pattern is the whole check (the refine adds real-date and DST checks)
   it('SlotId, IsoDate and LocalTime carry a pattern and an example', () => {
     const { api } = apiHarness({ extend: registerSpecRoutes });
@@ -50,5 +77,17 @@ describe('OpenAPI document (architecture §5.2)', () => {
     expect(
       new RegExp((schemas.SlotId as { pattern: string }).pattern).test('2027-03-28T09:00#gym'),
     ).toBe(false);
+  });
+
+  // Value: protects=the SPA's generated types and docs know a client email is an email; fails_when=the piped EmailSchema loses its format in the generated document; why_new=the pattern spec above covers ids and dates only; seam=none; no_claim=the server-side validation itself (contracts specs)
+  it('a client email carries format email and an example', () => {
+    const { api } = apiHarness();
+    const schemas = openApiDocument(api).components?.schemas ?? {};
+    const profile = schemas.ClientProfile as { properties: Record<string, unknown> };
+    expect(profile.properties.email).toMatchObject({
+      type: 'string',
+      format: 'email',
+      example: 'cliente@example.com',
+    });
   });
 });

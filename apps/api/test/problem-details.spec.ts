@@ -96,6 +96,14 @@ describe('all: Zod rejection → 400 validation_failed with paths (architecture 
     expect(h.loggedErrors).toHaveLength(logged);
   });
 
+  // Value: protects=only Hono's unparsable-body 400 is read as the caller's mistake; any other Hono refusal is a logged server fault; fails_when=toApiError maps every HTTPException to validation_failed (a 413 or 401 from a framework middleware becomes a silent 400) or passes Hono's status and message through uncatalogued; why_new=the invalid-JSON spec covers only status 400; seam=spec route that throws HTTPException(413); no_claim=which framework middlewares the API will mount
+  it('a Hono refusal other than an unparsable body → 500 internal_error, logged', async () => {
+    const logged = h.loggedErrors.length;
+    const res = await h.call('GET', '/spec/throw/http-413');
+    expectProblem(res, 'internal_error', 500);
+    expect(h.loggedErrors).toHaveLength(logged + 1);
+  });
+
   // Value: protects=authentication runs before validation, so a stranger learns nothing about the schema; fails_when=the validators run before the authorize middleware; why_new=first route with both; seam=spec route; no_claim=none
   it('a request without a token is 401 even when its body is invalid', async () => {
     expectProblem(await h.call('POST', validPath, { json: {} }), 'unauthenticated', 401);

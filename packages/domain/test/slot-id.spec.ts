@@ -101,13 +101,11 @@ describe('SlotId: identity of a slot (<date>T<HH:mm>#<type>)', () => {
     expect((error as InvalidSlotIdError).input).toBe('nope');
   });
 
-  // Value: protects=a slot id survives a URL path: `#` and `:` are encoded and decode back; fails_when=toPathSegment stops encoding `#` (the request loses `#pool`) or fromPathSegment accepts garbage; why_new=TODOS.md (slot ids in URL paths); seam=none; no_claim=Hono's param decoding (API spec)
-  it('toPathSegment encodes the id for a URL path and fromPathSegment reads it back', () => {
+  // Value: protects=a slot id survives a URL path: `#` and `:` are encoded and decode back; fails_when=toPathSegment stops encoding `#` (the request loses `#pool`) or encodes lossily; why_new=TODOS.md (slot ids in URL paths); seam=none; no_claim=Hono's param decoding (apps/api/test/slot-id-path.spec.ts)
+  it('toPathSegment encodes the id for a URL path, losslessly', () => {
     const id = SlotId.of('2027-03-28T09:00#pool');
     expect(SlotId.toPathSegment(id)).toBe('2027-03-28T09%3A00%23pool');
-    expect(SlotId.fromPathSegment(SlotId.toPathSegment(id))).toBe(id);
-    expect(() => SlotId.fromPathSegment('%E0%A4%A')).toThrow(InvalidSlotIdError);
-    expect(() => SlotId.fromPathSegment('2027-03-28T09:00')).toThrow(InvalidSlotIdError);
+    expect(decodeURIComponent(SlotId.toPathSegment(id))).toBe(id);
   });
 
   // Value: protects=a schema refinement calling startExists never throws on malformed input (a throw inside a refine escapes safeParse as a 500); fails_when=startExists parses before checking the format; why_new=TODOS.md (SlotIdSchema must fail validation, not throw); seam=none; no_claim=runtimes without tz data

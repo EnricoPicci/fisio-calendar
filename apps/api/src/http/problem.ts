@@ -50,7 +50,11 @@ export function problemResponse(error: ApiError): Response {
   const body = problemBody(error);
   return new Response(JSON.stringify(body), {
     status: body.status,
-    headers: { 'content-type': PROBLEM_MEDIA_TYPE },
+    headers: {
+      'content-type': PROBLEM_MEDIA_TYPE,
+      // RFC 9110 §15.5.2: every 401 names the scheme the client must authenticate with.
+      ...(error.code === 'unauthenticated' ? { 'www-authenticate': 'Bearer' } : {}),
+    },
   });
 }
 

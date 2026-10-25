@@ -1,4 +1,4 @@
-import { closeTestDocumentClient } from '@fisio/testkit';
+import { closeTestDocumentClient, TestTokenIssuer } from '@fisio/testkit';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ACCESS_LEVELS, type Access } from '../src/http/access';
 import { API_BASE_PATH } from '../src/http/app';
@@ -46,9 +46,16 @@ describe.each([
     const routes = declaredRoutes(h);
     let clientToken: string;
     let therapistToken: string;
+    /** Client tokens the status check refuses: invited, blocked, and no client item. */
+    let refusedClientTokens: string[];
     beforeAll(async () => {
       clientToken = (await h.seedClient('enabled')).token;
       therapistToken = (await h.seedTherapist()).token;
+      refusedClientTokens = [
+        (await h.seedClient('invited')).token,
+        (await h.seedClient('blocked')).token,
+        h.token(crypto.randomUUID(), 'client'),
+      ];
     });
 
     // Value: protects=no route is served without an access declaration, so the matrix below cannot miss one; fails_when=a route is registered with plain `api.get`/`openapi` and createRoute, bypassing defineRoute, or is hidden from the registry; why_new=first generated matrix; seam=Hono's route table; no_claim=routes outside /api/v1 (none exist)
@@ -60,8 +67,12 @@ describe.each([
           (r) => `${r.method} ${API_BASE_PATH}${r.path.replaceAll(/\{([^}]+)\}/g, ':$1')}`,
         ),
       );
+      // `ALL` entries are middleware (`use`), allowed only on wildcard paths: an `all()` or `use()`
+      // on a concrete path could answer requests without a declaration.
       const served = new Set(
-        h.app.routes.filter((r) => r.method !== 'ALL').map((r) => `${r.method} ${r.path}`),
+        h.app.routes
+          .filter((r) => r.method !== 'ALL' || !r.path.endsWith('*'))
+          .map((r) => `${r.method} ${r.path}`),
       );
       expect([...served].filter((route) => !declared.has(route))).toEqual([]);
     });
@@ -75,10 +86,39 @@ describe.each([
       }
     });
 
-    // Value: protects=a client token opens no therapist route; fails_when=a /admin route is declared member; why_new=generated over all routes; seam=none; no_claim=ownership checks
-    it('every therapist route (/admin/*) × client token → 403 forbidden', async () => {
+    // Value: protects=a token that does not verify is refused as unauthenticated on every protected route, before any role or status check; fails_when=a route skips verification or a parse/signature failure becomes 403 or 500; why_new=only /me was driven with invalid tokens; seam=a second issuer with the same kid; no_claim=the individual verifier rules (authentication.spec.ts)
+    it('every protected route × invalid token → 401 unauthenticated', async () => {
+      const forger = new TestTokenIssuer({ kid: h.issuer.kid });
+      const forged = forger.accessToken(
+        { sub: crypto.randomUUID(), role: 'therapist', tenantId: h.tenantId },
+        { issuedAt: h.clock.now() },
+      );
+      for (const route of routes.filter((r) => r.access !== 'public')) {
+        for (const token of ['not.a.jwt', forged]) {
+          const res = await h.call(route.method, requestPath(route.path), { token });
+          expect(res.status, label(route)).toBe(401);
+          expect(res.body.code, label(route)).toBe('unauthenticated');
+        }
+      }
+    });
+
+    // Value: protects=a client token opens no therapist route, whatever the client's status; fails_when=a /admin route is declared member, or the role check moves after a status check that lets some status through; why_new=generated over all routes and client states; seam=none; no_claim=ownership checks
+    it('every therapist route (/admin/*) × any client token → 403 forbidden', async () => {
       for (const route of routes.filter((r) => r.access === 'therapist')) {
-        const res = await h.call(route.method, requestPath(route.path), { token: clientToken });
+        for (const token of [clientToken, ...refusedClientTokens]) {
+          const res = await h.call(route.method, requestPath(route.path), { token });
+          expect(res.status, label(route)).toBe(403);
+          expect(res.body.code, label(route)).toBe('forbidden');
+        }
+      }
+    });
+
+    // Value: protects=a therapist token opens nothing until its tenant is bootstrapped, on member and therapist routes alike; fails_when=the Settings check is skipped for one access level; why_new=only GET /me was tested (client-status.spec.ts); seam=a second harness whose tenant has no Settings item; no_claim=the bootstrap CLI (WP0.5)
+    it('every protected route × therapist of a tenant without its Settings item → 403 forbidden', async () => {
+      const bare = apiHarness(extend ? { extend } : {});
+      const token = bare.token(crypto.randomUUID(), 'therapist');
+      for (const route of routes.filter((r) => r.access !== 'public')) {
+        const res = await bare.call(route.method, requestPath(route.path), { token });
         expect(res.status, label(route)).toBe(403);
         expect(res.body.code, label(route)).toBe('forbidden');
       }
@@ -91,12 +131,12 @@ describe.each([
       }
     });
 
-    // Value: protects=the access level does not over-refuse: the roles it admits get past the guard; fails_when=member routes refuse the therapist or a client, or public routes demand a token; why_new=generated; seam=none; no_claim=the status the handler then returns
+    // Value: protects=the access level does not over-refuse: the roles it admits get past the guard, and a public route ignores any Authorization header; fails_when=member routes refuse the therapist or a client, or public routes demand, verify or status-check a token; why_new=generated; seam=none; no_claim=the status the handler then returns
     it('every route lets through the callers its level admits', async () => {
       for (const route of routes) {
         const callers =
           route.access === 'public'
-            ? [undefined]
+            ? [undefined, 'not.a.jwt', clientToken, therapistToken, ...refusedClientTokens]
             : route.access === 'member'
               ? [clientToken, therapistToken]
               : [therapistToken];

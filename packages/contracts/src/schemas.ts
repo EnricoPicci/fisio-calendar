@@ -30,7 +30,13 @@ export const PhoneE164Schema = z
   .regex(/^\+[1-9]\d{6,14}$/, 'Expected an E.164 phone number such as +393331234567');
 
 /** Trimmed and lower-cased before validation, so one mailbox is one client. */
-export const EmailSchema = z.string().trim().toLowerCase().pipe(z.email());
+export const EmailSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .pipe(z.email())
+  // The pipe hides the format from the OpenAPI generator; state it for the SPA's types.
+  .meta({ format: 'email', example: 'cliente@example.com' });
 
 /** A local calendar date, `yyyy-mm-dd`, that exists, in years 1900–9999 (`MIN_YEAR`–`MAX_YEAR`). */
 export const IsoDateSchema = z

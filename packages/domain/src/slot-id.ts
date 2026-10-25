@@ -128,21 +128,10 @@ function toPathSegment(id: SlotId): string {
   return encodeURIComponent(id);
 }
 
-/** The id from a path segment written by {@link toPathSegment}, or `InvalidSlotIdError`. */
-function fromPathSegment(segment: string): SlotId {
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(segment);
-  } catch {
-    throw new InvalidSlotIdError(segment, 'not a valid percent-encoded path segment');
-  }
-  return of(decoded);
-}
-
 /**
  * `format` builds an id from parts, `parse` reads one, `of` brands a string, `is` tests one,
- * `startExists` checks that its start is a real Rome wall-clock time, `toPathSegment` and
- * `fromPathSegment` carry one in a URL path.
+ * `startExists` checks that its start is a real Rome wall-clock time, `toPathSegment` writes one
+ * into a URL path (a route reads it back through Hono's decoding and `SlotIdSchema`).
  */
 export const SlotId = {
   format,
@@ -151,5 +140,4 @@ export const SlotId = {
   is,
   startExists,
   toPathSegment,
-  fromPathSegment,
 } as const;

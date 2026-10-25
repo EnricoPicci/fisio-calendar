@@ -35,7 +35,9 @@ describe('Config port (architecture §4.1, §11.4)', () => {
         AUTH_CLIENT_ID: undefined,
       });
     expect(attempt).toThrow(ConfigError);
-    expect(attempt).toThrow(/STAGE, TABLE_NAME, AUTH_ISSUER, AUTH_CLIENT_ID|TABLE_NAME/);
+    for (const name of ['STAGE', 'TABLE_NAME', 'AUTH_ISSUER', 'AUTH_CLIENT_ID']) {
+      expect(attempt, name).toThrow(name);
+    }
     expect(attempt).not.toThrow(/not a url|staging/);
   });
 

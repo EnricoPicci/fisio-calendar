@@ -155,7 +155,9 @@
             "type": "string"
           },
           "email": {
-            "type": "string"
+            "type": "string",
+            "format": "email",
+            "example": "cliente@example.com"
           },
           "phone": {
             "type": "string",

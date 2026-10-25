@@ -23,6 +23,8 @@ async function expectUnauthenticated(headers: Record<string, string>) {
   const res = await h.call('GET', '/me', { headers });
   expect(res.status).toBe(401);
   expect(res.body.code).toBe('unauthenticated');
+  // RFC 9110 §15.5.2 / RFC 6750 §3: a 401 names the scheme the client must use.
+  expect(res.headers.get('www-authenticate')).toBe('Bearer');
 }
 
 describe('all: missing or invalid token → 401 unauthenticated (architecture §8.2)', () => {
@@ -51,8 +53,9 @@ describe('all: missing or invalid token → 401 unauthenticated (architecture §
     } finally {
       h.clock.set('2027-03-01T08:00:00.000Z');
     }
-    const future = Math.floor(h.clock.now().getTime() / 1000) + 300;
-    await expectUnauthenticated({ authorization: `Bearer ${sign({ nbf: future })}` });
+    const now = Math.floor(h.clock.now().getTime() / 1000);
+    expect((await h.call('GET', '/me', { token: sign({ nbf: now }) })).status).toBe(200);
+    await expectUnauthenticated({ authorization: `Bearer ${sign({ nbf: now + 300 })}` });
     await expectUnauthenticated({ authorization: `Bearer ${sign({ exp: undefined })}` });
   });
 
@@ -73,11 +76,60 @@ describe('all: missing or invalid token → 401 unauthenticated (architecture §
     await expectUnauthenticated({ authorization: `Bearer ${sign({ sub: 'not-a-uuid' })}` });
   });
 
-  // Value: protects=a token whose key is unknown is refused, and the JWKS is fetched once, not per request; fails_when=the verifier refetches on every request or accepts an unknown kid; why_new=no spec looked at the JWKS cache; seam=the issuer's in-memory fetcher; no_claim=Cognito key rotation timing
-  it('refuses a token with an unknown key id, and fetches the JWKS once', async () => {
+  // Value: protects=the JWKS is fetched once across requests, not per request, and a token whose key is unknown is refused; fails_when=the verifier refetches on every request or accepts an unknown kid; why_new=no spec looked at the JWKS cache; seam=the issuer's in-memory fetcher; no_claim=Cognito key rotation timing (an unknown kid legitimately triggers one refetch)
+  it('fetches the JWKS once across requests, and refuses a token with an unknown key id', async () => {
+    for (let i = 0; i < 3; i++) {
+      expect((await h.call('GET', '/me', { token: client.token })).status).toBe(200);
+    }
+    expect(h.issuer.jwksRequests).toHaveLength(1);
     const stranger = new TestTokenIssuer();
     const token = stranger.accessToken(claims(), { issuedAt: h.clock.now() });
     await expectUnauthenticated({ authorization: `Bearer ${token}` });
-    expect(new Set(h.issuer.jwksRequests).size).toBe(1);
+  });
+});
+
+const BROKEN_KID = 'test-broken-jwks';
+
+/** An issuer whose JWKS endpoint answers `reply` instead of its keys. */
+class UnusableJwksIssuer extends TestTokenIssuer {
+  readonly #reply: () => Promise<ArrayBuffer>;
+  constructor(reply: () => Promise<ArrayBuffer>) {
+    super({ kid: BROKEN_KID });
+    this.#reply = reply;
+  }
+  override get fetcher() {
+    return { fetch: this.#reply };
+  }
+}
+
+const body = (text: string) => async () => new TextEncoder().encode(text).buffer as ArrayBuffer;
+
+describe('all: a JWKS that cannot be fetched or parsed → 500 internal_error (architecture §8.2)', () => {
+  // Value: protects=an outage or a broken JWKS answer does not sign every user out, and is logged; fails_when=a fetch or JWKS-validation error of aws-jwt-verify is mapped to InvalidTokenError (401); why_new=no spec covered the JWKS failure path; seam=the issuer's fetcher; no_claim=retry or caching of a failed fetch
+  it.each([
+    {
+      name: 'unreachable',
+      reply: async (): Promise<ArrayBuffer> => {
+        throw new Error('connect ECONNREFUSED');
+      },
+    },
+    { name: 'not JSON', reply: body('<html>502 Bad Gateway</html>') },
+    { name: 'without a keys array', reply: body('{"keys":{}}') },
+    {
+      name: 'publishing the key without its modulus',
+      reply: body(
+        JSON.stringify({
+          keys: [{ kty: 'RSA', kid: BROKEN_KID, alg: 'RS256', use: 'sig', e: 'AQAB' }],
+        }),
+      ),
+    },
+  ])('answers 500 and logs the error when the JWKS is $name', async ({ reply }) => {
+    const broken = apiHarness({ issuer: new UnusableJwksIssuer(reply) });
+    const res = await broken.call('GET', '/me', {
+      token: broken.token(crypto.randomUUID(), 'client'),
+    });
+    expect(res.status).toBe(500);
+    expect(res.body.code).toBe('internal_error');
+    expect(broken.loggedErrors).toHaveLength(1);
   });
 });

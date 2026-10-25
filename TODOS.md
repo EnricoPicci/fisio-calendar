@@ -63,7 +63,7 @@
 
 ### Domain time errors with their request path
 
-**What:** When the rules and range endpoints arrive, have their use cases raise `ApiError('validation_failed', { errors })` with the offending field when a domain time helper refuses an input, and cover it with an endpoint spec (a rule that starts at 02:30 on 2027-03-28). If a time zone ever comes from a request or the database, decide whether `InvalidTimeZoneError` becomes `validation_failed`.
+**What:** When the rules and range endpoints arrive, have their use cases raise `ApiError('validation_failed', { errors })` with the offending field when a domain time helper refuses an input, and cover it with an endpoint spec (a rule that starts at 02:30 on 2027-03-28). If a time zone ever comes from a request or the database, decide whether `InvalidTimeZoneError` becomes `validation_failed`. When a repository first parses a stored slot id or local date/time, wrap its domain errors (e.g. in a `CorruptItemError`) so the by-name fallback in `apps/api/src/http/problem.ts` cannot turn a corrupt database item into an unlogged 400 instead of a logged 500; cover it with a spec that stores a bad slot id.
 
 **Why:** WP0.4's error mapper turns `NonexistentLocalTimeError`, `InvalidLocalValueError` and `InvalidSlotIdError` into `validation_failed` by name, but it cannot know the path, so the SPA cannot highlight the field. `InvalidTimeZoneError` maps to `internal_error` today, because no request carries a zone and the error means the runtime lacks tz data (the API also refuses to start then).
 
@@ -127,6 +127,42 @@
 **Effort:** S
 **Priority:** P2
 **Depends on:** The Cognito and auth-emulator work packages.
+
+### Bearer tokens through CloudFront OAC to the Function URL
+
+**What:** Decide how the SPA's access token reaches the `api` Lambda behind CloudFront, then make `authorize` (`apps/api/src/http/access.ts`), the SPA `ApiClient` and the CDK `App` stack agree. Options: (a) a custom header such as `x-fisio-authorization: Bearer …`, forwarded by the origin request policy, with the API reading it in the cloud; (b) a Lambda Web Function origin with OAC signing behaviour `always-amz-auth`, which keeps the viewer's `Authorization`; (c) another design. Add a `dev` smoke step that calls `GET /api/v1/me` through CloudFront with a real token.
+
+**Why:** OAC signing behaviour `always` overwrites the viewer's `Authorization` header with CloudFront's SigV4 signature. `no-override` passes it unsigned, so the `AWS_IAM` Function URL refuses it, and `always-amz-auth` is valid only for Lambda Web Function origins (AWS docs: "Restrict access to an AWS Lambda function URL origin", `OriginAccessControlConfig.signingBehavior`). As designed (§8.2 bearer in `Authorization`, §9.1 OAC + IAM Function URL), every member and therapist route would answer 401 in `dev`/`prod`, while every local spec passes. It fails closed.
+
+**Context:** Red-team finding in the WP0.4 `/ship` review, verified against the AWS docs. The decision touches `infra/` and the SPA, so it was deferred (CLAUDE.md: ask before changing `infra/`; never widen a WP). Architecture §9.1 carries an open-decision note.
+
+**Effort:** S (code) once decided
+**Priority:** P1
+**Depends on:** Must be settled before WP0.9 (CDK `App` stack) and WP0.7 (SPA `ApiClient`).
+
+### JWKS back-off answers 401 for a new signing key
+
+**What:** Decide how a token whose `kid` is not cached is answered while `aws-jwt-verify`'s `SimplePenaltyBox` is in its 10 s back-off (`WaitPeriodNotYetEndedJwkError`, today a 401). Either add it to `SERVER_FAULTS` in `apps/api/src/identity/token-verifier.ts` (500, so clients retry; cost: unknown-kid noise then logs as server faults and counts toward the 5xx alarm), or pass a penalty box keyed by `kid` as well as the JWKS URI. Pin the choice with a spec (unknown kid, then a valid token with a new kid inside 10 s).
+
+**Why:** The penalty box is keyed by the JWKS URI only. An unauthenticated caller sending tokens with random `kid`s every 10 s keeps it closed, so after a Cognito key rotation (or an emulator restart with new keys) real users get 401 until the attacker stops. Cached kids are unaffected.
+
+**Context:** Red-team finding in the WP0.4 `/ship` review, verified in `aws-jwt-verify@5.2.1` `dist/esm/jwk.js` (`SimplePenaltyBox.wait(jwksUri)`).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.5 (emulator key rotation) or WP0.9.
+
+### Warm the JWKS cache at cold start
+
+**What:** In the Lambda composition root, start `verifier.hydrate()` at init without awaiting it at the top level, and catch its rejection so a JWKS outage still surfaces per request as a 500.
+
+**Why:** The JWKS is fetched lazily on the first authenticated request after each cold start, adding a round trip to `cognito-idp` to a user request. With reserved concurrency 10 and low traffic, cold starts are a large share of requests.
+
+**Context:** Performance finding in the WP0.4 `/ship` review. Measure the cold-start latency on `dev` before and after.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9 (Lambda deployed and measurable).
 
 ## Web app
 
@@ -208,6 +244,30 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Priority:** P2
 **Depends on:** WP0.5 (before `tools/local` imports `apps/api`).
 
+### Local API defaults from their single source
+
+**What:** Derive `LOCAL_DEFAULTS.TABLE_NAME` and `LOCAL_DEFAULTS.DYNAMODB_ENDPOINT` in `apps/api/src/runtime/local.ts` from `tableName('local')` (`infra/lib/table-definition.ts`) and `DEFAULT_LOCAL_ENDPOINT` (`tools/local/src/table.ts`), or add a spec asserting they are equal.
+
+**Why:** The values are copied today. WP0.4 already changed the local endpoint from `localhost` to `127.0.0.1` in `tools/local`; the next such change would leave `pnpm dev` pointing at a table or host `pnpm local:up` never created.
+
+**Context:** Maintainability finding in the WP0.4 `/ship` review. Either fix adds a workspace dependency of `apps/api` on `@fisio/infra` and `@fisio/local` (ask first, CLAUDE.md), and interacts with "Dependency direction between testkit and tools/local" above.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.5.
+
+### Guard the local `/__dev/*` routes against browser requests
+
+**What:** Before the dev hooks do real work, refuse `/__dev/*` requests whose `Host` is not `127.0.0.1:<port>`/`localhost:<port>` or whose `Origin` is set and is not the local web origin (or require `content-type: application/json` on both routes so a cross-origin request needs a preflight). Cover it in `apps/api/test/runtime.spec.ts`.
+
+**Why:** `POST /__dev/deliver` is public and bodyless; binding to 127.0.0.1 stops other machines but not a web page open in the developer's browser (a simple cross-origin POST, or DNS rebinding), which could trigger delivery of due notifications on the local stack.
+
+**Context:** Security finding in the WP0.4 `/ship` review. No impact while the hooks are no-ops; the Lambda root never mounts these routes.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.6 (the hooks start delivering).
+
 ### One local stack per worktree
 
 **What:** Let each git worktree run its own stack: a per-worktree `COMPOSE_PROJECT_NAME` and host ports (the code already honours `DYNAMODB_ENDPOINT`), documented in the README; or document that all worktrees share one stack and that `pnpm local:down` stops it for all of them.
@@ -267,7 +327,7 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 
 ## Completed
 
-- **Slot ids in URL paths** (WP0.4): `SlotId.toPathSegment`/`fromPathSegment`; route params decode through Hono and `SlotIdSchema`; round-trip spec through the in-process fetch adapter. The CloudFront check and the SPA client remain ("Slot ids through CloudFront and the SPA client").
+- **Slot ids in URL paths** (WP0.4): `SlotId.toPathSegment`; route params decode through Hono and `SlotIdSchema`; round-trip spec through the in-process fetch adapter. The CloudFront check and the SPA client remain ("Slot ids through CloudFront and the SPA client").
 - **OpenAPI patterns for refine-only schemas** (WP0.4): `SlotIdSchema`, `IsoDateSchema` and `LocalTimeSchema` carry the domain's shape as `regex` plus an example; the OpenAPI spec asserts the patterns; `conflict_retry_exhausted` no longer names the attempt count.
 - **Map domain time errors to `validation_failed`** (WP0.4): the API error mapper recognises the domain errors by name (`isErrorNamed`, shared with `classifyError`); the time helpers throw `InvalidLocalValueError` for malformed input; `SlotIdSchema`'s refinement never throws, and the API refuses to start without Europe/Rome tz data. The request-path part remains ("Domain time errors with their request path").
 - **Local stack hardening, two items** (WP0.4): the DynamoDB Local endpoint defaults to `127.0.0.1`; `testDocumentClient()` is cached per spec file and closed with `closeTestDocumentClient()`.

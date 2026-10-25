@@ -1,5 +1,6 @@
 import { IsoDateSchema, LocalTimeSchema, SlotIdSchema } from '@fisio/contracts';
 import { InvalidTimeZoneError, localDateTimeToUtc, SlotId } from '@fisio/domain';
+import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { defineRoute } from '../src/http/access';
 import type { AppDeps } from '../src/http/app';
@@ -60,4 +61,6 @@ export function registerSpecRoutes(api: ApiRouter, deps: AppDeps): void {
   );
   throwing('/spec/throw/time-zone', () => new InvalidTimeZoneError('Europe/Rme'));
   throwing('/spec/throw/unexpected', () => new Error('secret table fisio-prod, item T#123'));
+  // A Hono refusal other than the unparsable-body 400, e.g. a body-limit middleware's 413.
+  throwing('/spec/throw/http-413', () => new HTTPException(413, { message: 'body too large' }));
 }
