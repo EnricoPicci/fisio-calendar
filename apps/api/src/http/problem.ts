@@ -48,14 +48,23 @@ export function problemBody(error: ApiError): Problem {
 
 export function problemResponse(error: ApiError): Response {
   const body = problemBody(error);
+  const challenge = error.code === 'unauthenticated' ? bearerChallenge(error) : undefined;
   return new Response(JSON.stringify(body), {
     status: body.status,
     headers: {
       'content-type': PROBLEM_MEDIA_TYPE,
-      // RFC 9110 §15.5.2: every 401 names the scheme the client must authenticate with.
-      ...(error.code === 'unauthenticated' ? { 'www-authenticate': 'Bearer' } : {}),
+      ...(challenge ? { 'www-authenticate': challenge } : {}),
     },
   });
+}
+
+/**
+ * RFC 9110 §15.5.2 / RFC 6750 §3: every 401 names the scheme; a token that was sent and refused
+ * (the verifier's `InvalidTokenError`) adds `error="invalid_token"`, so a client can tell an
+ * expired session from a missing one. Recognised by name, like the domain errors below.
+ */
+function bearerChallenge(error: ApiError): string {
+  return isErrorNamed(error.cause, 'InvalidTokenError') ? 'Bearer error="invalid_token"' : 'Bearer';
 }
 
 /**

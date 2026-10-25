@@ -3,6 +3,8 @@ import type { Clock } from '@fisio/domain';
 import { JwtVerifier } from 'aws-jwt-verify';
 import {
   FetchError,
+  JwkInvalidKtyError,
+  JwkInvalidUseError,
   JwksValidationError,
   JwkValidationError,
   JwtBaseError,
@@ -43,8 +45,17 @@ export class InvalidTokenError extends Error {
 /** 100 years: disables the library's wall-clock expiry check (see above). */
 const LIBRARY_EXPIRY_CHECK_OFF = 100 * 365 * 24 * 3600;
 
-/** `aws-jwt-verify` errors about the issuer's JWKS, not the token: the JWKS fetch or its content. */
-const SERVER_FAULTS = [FetchError, JwksValidationError, JwkValidationError];
+/**
+ * `aws-jwt-verify` errors about the issuer's JWKS, not the token: the fetch, its content, or the
+ * selected key being unusable for signatures (`use`, `kty`). A caller cannot inject a JWK.
+ */
+const SERVER_FAULTS = [
+  FetchError,
+  JwksValidationError,
+  JwkValidationError,
+  JwkInvalidUseError,
+  JwkInvalidKtyError,
+];
 
 /**
  * Claims the pre-token-generation trigger adds (§8.1): `role` and `tenantId`. `sub` is the

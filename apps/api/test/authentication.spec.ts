@@ -1,6 +1,13 @@
-import { closeTestDocumentClient, TEST_CLIENT_ID, TestTokenIssuer } from '@fisio/testkit';
+import {
+  closeTestDocumentClient,
+  TEST_CLIENT_ID,
+  TEST_JWKS_URI,
+  TestTokenIssuer,
+} from '@fisio/testkit';
+import { FetchError } from 'aws-jwt-verify/error';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { apiHarness } from './harness';
+import { registerSpecRoutes } from './spec-routes';
 
 const h = apiHarness();
 afterAll(closeTestDocumentClient);
@@ -19,20 +26,26 @@ const sign = (override: Record<string, unknown>, expiresInSeconds?: number) =>
     ...(expiresInSeconds === undefined ? {} : { expiresInSeconds }),
   });
 
-async function expectUnauthenticated(headers: Record<string, string>) {
+/** RFC 6750 §3.1: the challenge for a token that was sent and refused. */
+const INVALID_TOKEN = 'Bearer error="invalid_token"';
+
+/**
+ * A 401 `unauthenticated` that names the scheme (RFC 9110 §15.5.2, RFC 6750 §3): a bare `Bearer`
+ * when no bearer token was sent, `invalid_token` when one was sent and refused.
+ */
+async function expectUnauthenticated(headers: Record<string, string>, challenge = INVALID_TOKEN) {
   const res = await h.call('GET', '/me', { headers });
   expect(res.status).toBe(401);
   expect(res.body.code).toBe('unauthenticated');
-  // RFC 9110 §15.5.2 / RFC 6750 §3: a 401 names the scheme the client must use.
-  expect(res.headers.get('www-authenticate')).toBe('Bearer');
+  expect(res.headers.get('www-authenticate')).toBe(challenge);
 }
 
 describe('all: missing or invalid token → 401 unauthenticated (architecture §8.2)', () => {
-  // Value: protects=a protected route never runs without credentials; fails_when=the middleware lets an absent or non-bearer header through; why_new=first auth middleware; seam=none; no_claim=CloudFront's own headers
+  // Value: protects=a protected route never runs without credentials, and the challenge says no token was sent; fails_when=the middleware lets an absent or non-bearer header through, or answers invalid_token without a token; why_new=first auth middleware; seam=none; no_claim=CloudFront's own headers
   it('refuses a request without a bearer token', async () => {
-    await expectUnauthenticated({});
-    await expectUnauthenticated({ authorization: `Basic ${btoa('a:b')}` });
-    await expectUnauthenticated({ authorization: 'Bearer' });
+    await expectUnauthenticated({}, 'Bearer');
+    await expectUnauthenticated({ authorization: `Basic ${btoa('a:b')}` }, 'Bearer');
+    await expectUnauthenticated({ authorization: 'Bearer' }, 'Bearer');
   });
 
   // Value: protects=garbage or a token signed with another key is refused; fails_when=signature verification is skipped or a parse error becomes a 500; why_new=first verifier; seam=a second issuer with the same kid, so the JWKS lookup succeeds and only the signature differs; no_claim=algorithm-confusion attacks beyond what aws-jwt-verify covers
@@ -108,6 +121,14 @@ describe('all: a JWKS that cannot be fetched or parsed → 500 internal_error (a
   // Value: protects=an outage or a broken JWKS answer does not sign every user out, and is logged; fails_when=a fetch or JWKS-validation error of aws-jwt-verify is mapped to InvalidTokenError (401); why_new=no spec covered the JWKS failure path; seam=the issuer's fetcher; no_claim=retry or caching of a failed fetch
   it.each([
     {
+      // What the library's own HTTPS fetcher throws in the cloud (aws-jwt-verify FetchError).
+      name: 'answering an HTTP error',
+      reply: async (): Promise<ArrayBuffer> => {
+        throw new FetchError(TEST_JWKS_URI, 'Status code is 503, expected 200');
+      },
+    },
+    {
+      // What the local plain-HTTP fetcher (fetchJwks) throws: not an aws-jwt-verify error.
       name: 'unreachable',
       reply: async (): Promise<ArrayBuffer> => {
         throw new Error('connect ECONNREFUSED');
@@ -115,6 +136,22 @@ describe('all: a JWKS that cannot be fetched or parsed → 500 internal_error (a
     },
     { name: 'not JSON', reply: body('<html>502 Bad Gateway</html>') },
     { name: 'without a keys array', reply: body('{"keys":{}}') },
+    {
+      name: 'publishing the key for encryption, not signing',
+      reply: body(
+        JSON.stringify({
+          keys: [{ kty: 'RSA', kid: BROKEN_KID, alg: 'RS256', use: 'enc', n: 'AQAB', e: 'AQAB' }],
+        }),
+      ),
+    },
+    {
+      name: 'publishing the key with an unsupported key type',
+      reply: body(
+        JSON.stringify({
+          keys: [{ kty: 'oct', kid: BROKEN_KID, alg: 'RS256', use: 'sig', k: 'AQAB' }],
+        }),
+      ),
+    },
     {
       name: 'publishing the key without its modulus',
       reply: body(
@@ -124,12 +161,26 @@ describe('all: a JWKS that cannot be fetched or parsed → 500 internal_error (a
       ),
     },
   ])('answers 500 and logs the error when the JWKS is $name', async ({ reply }) => {
-    const broken = apiHarness({ issuer: new UnusableJwksIssuer(reply) });
-    const res = await broken.call('GET', '/me', {
+    const broken = apiHarness({
+      issuer: new UnusableJwksIssuer(reply),
+      extend: registerSpecRoutes,
+    });
+    for (const [path, role] of [
+      ['/me', 'client'],
+      ['/spec/therapist-only', 'therapist'],
+    ] as const) {
+      const res = await broken.call('GET', path, {
+        token: broken.token(crypto.randomUUID(), role),
+      });
+      expect(res.status, path).toBe(500);
+      expect(res.body.code, path).toBe('internal_error');
+    }
+    expect(broken.loggedErrors).toHaveLength(2);
+    // A public route never reads the token, so the outage does not reach it.
+    const health = await broken.call('GET', '/health', {
       token: broken.token(crypto.randomUUID(), 'client'),
     });
-    expect(res.status).toBe(500);
-    expect(res.body.code).toBe('internal_error');
-    expect(broken.loggedErrors).toHaveLength(1);
+    expect(health.status).toBe(200);
+    expect(broken.loggedErrors).toHaveLength(2);
   });
 });

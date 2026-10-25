@@ -54,6 +54,12 @@ describe('OpenAPI document (architecture §5.2)', () => {
     };
     expect(badRequest.description).toContain('`validation_failed`');
     expect(badRequest.content).toHaveProperty(['application/problem+json']);
+    for (const path of ['/me', '/spec/therapist-only']) {
+      const unauthorised = doc.paths?.[path]?.get?.responses?.['401'] as { headers?: object };
+      expect(unauthorised.headers, path).toHaveProperty(['WWW-Authenticate']);
+    }
+    const forbidden = doc.paths?.['/me']?.get?.responses?.['403'] as { headers?: object };
+    expect(forbidden.headers).toBeUndefined();
     expect(doc.components?.securitySchemes?.bearerAuth).toMatchObject({
       type: 'http',
       scheme: 'bearer',
