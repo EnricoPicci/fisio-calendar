@@ -121,6 +121,68 @@ describe('bootstrap:therapist (architecture §11.5)', () => {
     expect(calls).toEqual(['startPasswordSetup', 'globalSignOut']);
   });
 
+  // Value: protects=a sign-out that failed after the new code replaced the password is retried by the next run; fails_when=the sign-out is conditioned on `passwordSet`, which on Cognito the code itself clears (FORCE_CHANGE_PASSWORD); why_new=security and state-machines finding (WP0.5 ship cycle 3); seam=a stub port shaped like Cognito; no_claim=Cognito's real UserStatus (WP0.10)
+  it('a sign-out that failed is retried by the next run, though the password no longer shows', async () => {
+    let user: IdentityUser = {
+      userId: '9d4f0c7e-1d2b-4c3d-9e8f-0a1b2c3d4e5f',
+      email: 'riprova@example.test',
+      role: 'therapist',
+      enabled: true,
+      passwordSet: true,
+      totp: { enabled: true, preferred: true },
+      totpEnrolled: false,
+    };
+    let signOuts = 0;
+    const identity = identityWith({
+      findUserByEmail: async () => user,
+      setTotpPreference: async () => {},
+      startPasswordSetup: async () => {
+        user = { ...user, passwordSet: false };
+        return 'codice-nuovo';
+      },
+      globalSignOut: async () => {
+        signOuts++;
+        if (signOuts === 1) throw new Error('throttled');
+      },
+    });
+    await expect(bootstrapTherapist({ ...deps, identity }, input(user.email))).rejects.toThrow();
+    const again = await bootstrapTherapist({ ...deps, identity }, input(user.email));
+    expect(code(again.setupLink)).toBe('codice-nuovo');
+    expect(signOuts).toBe(2);
+  });
+
+  // Value: protects=a malformed setup URL fails before any account changes, so no code is issued that no link carries; fails_when=the URL is parsed after createUser or startPasswordSetup; why_new=state-machines finding (WP0.5 ship cycle 3); seam=emulator; no_claim=the CLI's own URL checks
+  it('a malformed setup URL changes no account', async () => {
+    await expect(
+      bootstrapTherapist(deps, { ...input('url-rotto@example.test'), setupUrl: 'non-un-url' }),
+    ).rejects.toThrow();
+    expect(await t.identity.findUserByEmail('url-rotto@example.test')).toBeUndefined();
+  });
+
+  // Value: protects=a therapist the first read shows as finished gets no new link, whatever the second read says; fails_when=bootstrap decides from the second read alone and replaces her password; why_new=red-team finding (WP0.5 ship cycle 3); seam=a stub port; no_claim=which read Cognito answers first
+  it('a setup the first read shows as finished is left alone', async () => {
+    const finished: IdentityUser = {
+      userId: '0e5f0c7e-1d2b-4c3d-9e8f-0a1b2c3d4e5f',
+      email: 'prima-lettura@example.test',
+      role: 'therapist',
+      enabled: true,
+      passwordSet: true,
+      totp: { enabled: true, preferred: true },
+      totpEnrolled: true,
+    };
+    let reads = 0;
+    const identity = identityWith({
+      findUserByEmail: async () =>
+        reads++ === 0 ? finished : { ...finished, totpEnrolled: false },
+      setTotpPreference: async () => {},
+      startPasswordSetup: async () => {
+        throw new Error('a new setup would replace her password');
+      },
+    });
+    const result = await bootstrapTherapist({ ...deps, identity }, input(finished.email));
+    expect(result.setupLink).toBeUndefined();
+  });
+
   // Value: protects=an enrolled therapist whose TOTP preference was off gets it back and no new link (which on Cognito would replace her password); fails_when=bootstrap decides from the read taken before it restored the preference; why_new=state-machines finding (WP0.5); seam=a stub port shaped like Cognito, where enrolment shows only while the preference is on; no_claim=Cognito's real UserMFASettingList (WP0.10 spike)
   it('an enrolled therapist with the TOTP preference off gets it back and no new link', async () => {
     let preferenceOn = false;

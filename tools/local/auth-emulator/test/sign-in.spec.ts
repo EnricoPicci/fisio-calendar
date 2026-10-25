@@ -288,7 +288,7 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     }
   });
 
-  // Value: protects=a wrong TOTP or password is refused and counts toward the lockout; fails_when=a wrong code is accepted or failures are not counted; why_new=first emulator; seam=none; no_claim=replay protection within one 30-second step
+  // Value: protects=a wrong TOTP or password is refused and counts toward the lockout, and a TOTP step opened before the lock cannot be answered while it lasts; fails_when=a wrong code is accepted, failures are not counted, or answerTotp skips the lock check; why_new=first emulator; seam=none; no_claim=replay protection within one 30-second step
   it('wrong TOTP code is refused; wrong passwords lock the account for a while', async () => {
     const therapist = await h.therapist();
     const session = sessionOf(
@@ -427,6 +427,7 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
   });
 
   // Value: protects=a password-proven step and an enrolment step last 5 minutes, and an expired enrolment stores nothing while the link stays usable; fails_when=the expiry check is dropped from answerTotp or verifyTotpSetup (the TTL deletes lazily); why_new=state-machines and testing findings (WP0.5): only the email code's expiry was specced; seam=FixedClock; no_claim=Cognito's AuthSessionValidity (WP0.9)
+  // Value: protects=a TOTP step and an enrolment live 5 minutes, and an expired enrolment stores nothing while its setup code stays usable; fails_when=a step is answered after its expiry, or an expired enrolment writes the password or secret; why_new=state-machines finding (WP0.5); seam=FixedClock; no_claim=Cognito's session lifetime
   it('a TOTP step or an enrolment left open for 5 minutes is refused', async () => {
     const therapist = await h.therapist();
     const step = sessionOf(
@@ -536,7 +537,7 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     expect(await h.identity.findUserByEmail(user.email)).toMatchObject({ passwordSet: false });
   });
 
-  // Value: protects=a double submit of the right TOTP code, at sign-in or at enrolment, succeeds once; fails_when=the session is no longer spent with a conditional delete; why_new=state-machines finding (WP0.5): only the email code was raced; seam=DynamoDB Local conditional writes; no_claim=request timing
+  // Value: protects=a double submit of the right TOTP code, at sign-in or at enrolment, succeeds once; fails_when=neither the code's single use nor the session's conditional delete stops the second answer, or takeSession lets two takes win (the store-level race); why_new=state-machines and testing findings (WP0.5); seam=DynamoDB Local conditional writes; no_claim=request timing
   it('two answers with the right TOTP code at once succeed once, at sign-in and at enrolment', async () => {
     const therapist = await h.therapist();
     const step = sessionOf(
@@ -560,5 +561,67 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
       h.emulator.verifyTotpSetup(enrolment.session, first),
     ]);
     expect(setups.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+
+    // The race at the store, independent of the code's single use: one take wins.
+    const open = await h.emulator.startSetup(
+      await h.identity.startPasswordSetup(user.userId),
+      THERAPIST_PASSWORD,
+    );
+    const takes = await Promise.all([
+      h.store.takeSession(open.session),
+      h.store.takeSession(open.session),
+    ]);
+    expect(takes.toSorted()).toEqual([false, true]);
+  });
+
+  // Value: protects=a session answers only the step it was opened for; fails_when=#openSession stops checking the kind, so an email-code session skips TOTP or an enrolment session signs in; why_new=state-machines finding (WP0.5 ship cycle 3); seam=none; no_claim=Cognito's session strings (opaque there)
+  it('a session answers only its own step', async () => {
+    const client = await h.client();
+    const emailStep = sessionOf(await h.emulator.startEmailOtp(client.email));
+    const therapist = await h.therapist();
+    const totpStep = sessionOf(
+      await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD),
+    );
+    const user = await h.identity.createUser({
+      email: 'altro-passo@example.test',
+      role: 'therapist',
+    });
+    const enrolment = await h.emulator.startSetup(
+      await h.identity.startPasswordSetup(user.userId),
+      THERAPIST_PASSWORD,
+    );
+    const totp = await h.totp(therapist.secret);
+    expect([
+      await refusal(h.emulator.answerTotp(emailStep, totp)),
+      await refusal(h.emulator.answerEmailOtp(totpStep, h.lastCode(client.email))),
+      await refusal(h.emulator.answerTotp(enrolment.session, await h.totp(enrolment.secret))),
+      await refusal(h.emulator.verifyTotpSetup(totpStep, totp)),
+    ]).toEqual(['invalid_session', 'invalid_session', 'invalid_session', 'invalid_session']);
+  });
+
+  // Value: protects=a right password does not reset the wrong-TOTP count, so the second factor cannot be guessed four codes per password; fails_when=signInWithPassword clears the failures before the TOTP step is answered; why_new=state-machines finding (WP0.5 ship cycle 3); seam=none; no_claim=Cognito's own counting
+  it('a right password keeps the count of wrong TOTP codes', async () => {
+    const therapist = await h.therapist();
+    const signIn = async () =>
+      sessionOf(await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD));
+    const right = await h.totp(therapist.secret);
+    const wrong = `${(Number(right[0]) + 1) % 10}${right.slice(1)}`;
+    const first = await signIn();
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await refusal(h.emulator.answerTotp(first, wrong));
+    }
+    expect(await refusal(h.emulator.answerTotp(await signIn(), wrong))).toBe('too_many_attempts');
+  });
+
+  // Value: protects=both adapters read an enrolled authenticator as `totpEnrolled` only while the TOTP preference is on, as Cognito lists it (§15), so bootstrap decides the same on each; fails_when=the emulator reports the stored secret alone; why_new=api-contract finding (WP0.5 ship cycle 3); seam=none; no_claim=Cognito's UserMFASettingList (WP0.10 spike)
+  it('an enrolled authenticator shows only while the TOTP preference is on', async () => {
+    const therapist = await h.therapist();
+    expect(await h.identity.findUserByEmail(therapist.email)).toMatchObject({ totpEnrolled: true });
+    await h.identity.setTotpPreference(therapist.userId, { enabled: false, preferred: false });
+    expect(await h.identity.findUserByEmail(therapist.email)).toMatchObject({
+      totpEnrolled: false,
+    });
+    await h.identity.setTotpPreference(therapist.userId, { enabled: true, preferred: true });
+    expect(await h.identity.findUserByEmail(therapist.email)).toMatchObject({ totpEnrolled: true });
   });
 });

@@ -100,6 +100,7 @@ export function toIdentityUser(user: StoredUser): IdentityUser {
     enabled: user.enabled,
     passwordSet: user.passwordHash !== undefined,
     totp: { enabled: user.totpEnabled, preferred: user.totpPreferred },
-    totpEnrolled: user.totpSecret !== undefined,
+    // As on Cognito: an enrolled token shows only while the preference is on.
+    totpEnrolled: user.totpSecret !== undefined && user.totpEnabled,
   };
 }

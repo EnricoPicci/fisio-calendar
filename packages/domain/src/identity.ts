@@ -28,7 +28,11 @@ export interface IdentityUser {
   readonly passwordSet: boolean;
   /** The MFA preference, which may be set before any authenticator is enrolled. */
   readonly totp: TotpPreference;
-  /** True once an authenticator app has been enrolled and verified with a first code. */
+  /**
+   * True once an authenticator app has been enrolled and verified with a first code, **and** the
+   * TOTP preference is on: Cognito lists an enrolled token only while it is enabled (§15), so
+   * both adapters read false while the preference is off.
+   */
   readonly totpEnrolled: boolean;
 }
 

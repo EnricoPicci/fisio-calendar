@@ -49,6 +49,8 @@ export async function bootstrapTherapist(
   input: BootstrapInput,
 ): Promise<BootstrapResult> {
   const email = EmailSchema.parse(input.email);
+  // Parsed before any write: a bad URL must not leave a fresh code that no link carries.
+  const link = new URL(input.setupUrl);
   const { user, created } = await findOrCreate(deps.identity, email);
   if (user.role !== 'therapist') {
     throw new BootstrapError(`${email} belongs to a client; use another address for the therapist`);
@@ -58,15 +60,18 @@ export async function bootstrapTherapist(
   await deps.identity.setTotpPreference(user.userId, { enabled: true, preferred: true });
   await deps.settings.create(input.tenantId, deps.clock.now());
   const result = { userId: user.userId, email, created, reenabled };
-  // Read again: Cognito lists TOTP as enrolled only while the preference is on (§15).
+  // Read again: Cognito lists TOTP as enrolled only while the preference is on (§15). Either read
+  // showing a finished setup is enough: a new code would replace her password.
   const current = (await deps.identity.findUserByEmail(email)) ?? user;
-  if (current.passwordSet && current.totpEnrolled) return result;
+  const done = (u: IdentityUser) => u.passwordSet && u.totpEnrolled;
+  if (done(user) || done(current)) return result;
 
   const code = await deps.identity.startPasswordSetup(user.userId);
-  // A password without TOTP is a setup to redo. Once the code has replaced that password, end the
-  // refresh tokens it opened; access tokens already issued run out on their own (60 min).
-  if (current.passwordSet) await deps.identity.globalSignOut(user.userId);
-  const link = new URL(input.setupUrl);
+  // A password without TOTP is a setup to redo: once the code has replaced that password, end the
+  // refresh tokens it opened; access tokens already issued run out on their own (60 min). Signed
+  // out on every unfinished run, not only while a password shows: on Cognito the code itself
+  // clears `passwordSet`, so a sign-out that failed would otherwise never be retried.
+  await deps.identity.globalSignOut(user.userId);
   link.hash = new URLSearchParams({ email, code }).toString();
   return { ...result, setupLink: link.toString() };
 }

@@ -137,7 +137,10 @@ export class EmulatorStore {
     return link ? this.getUser(String(link.userId)) : undefined;
   }
 
-  /** Sets user fields (`undefined` values are skipped); a missing user is not found. */
+  /**
+   * Sets user fields (`undefined` values are skipped); a missing user is not found. With nothing
+   * to set it returns at once, without checking that the user exists.
+   */
   async updateUser(userId: string, changes: UserChanges): Promise<void> {
     const set = Object.entries(changes).filter(([, value]) => value !== undefined);
     if (set.length === 0) return;
