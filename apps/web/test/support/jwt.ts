@@ -12,10 +12,18 @@ export function fakeJwt(claims: TokenClaims & Record<string, unknown>): string {
   return `${encode({ alg: 'none', typ: 'JWT' })}.${encode(claims)}.`;
 }
 
-/** Access and ID tokens for `role`, the access token expiring at `exp` (seconds since the epoch). */
-export function fakeTokens(role: 'client' | 'therapist', exp: number, email?: string): AuthTokens {
+/**
+ * Access and ID tokens for `role`, the access token expiring at `exp` (seconds since the epoch);
+ * `sub` names one user per role unless given.
+ */
+export function fakeTokens(
+  role: 'client' | 'therapist',
+  exp: number,
+  email?: string,
+  sub = `${role}-sub`,
+): AuthTokens {
   return {
-    accessToken: fakeJwt({ sub: `${role}-sub`, role, exp, token_use: 'access' }),
-    idToken: fakeJwt({ sub: `${role}-sub`, role, exp, token_use: 'id', email }),
+    accessToken: fakeJwt({ sub, role, exp, token_use: 'access' }),
+    idToken: fakeJwt({ sub, role, exp, token_use: 'id', email }),
   };
 }

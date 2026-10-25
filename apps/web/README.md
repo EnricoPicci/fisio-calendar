@@ -60,3 +60,9 @@ types' freshness, and the template bindings and the shell (`src/pages/*.spec.tsx
 password + TOTP), the client home (empty bookings, calendar placeholder) or the therapist home.
 `/setup#email=…&code=…` is the therapist's one-time setup from the bootstrap link: password,
 then TOTP enrolment, then home.
+
+Two guards live in the view-models, so they hold whatever `AuthService` is behind the port: the
+therapist signs in only through a TOTP step (`SignInViewModel` refuses tokens naming her that a
+password alone or the client code flow produced, and signs the provider out), and a refresh that
+hands over another user's tokens (someone else signed in on a shared phone meanwhile) ends the
+session instead of carrying their bearer under the old name (`SessionViewModel`).

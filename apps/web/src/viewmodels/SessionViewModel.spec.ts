@@ -105,6 +105,23 @@ describe('C1 Session: stay signed in on the device (architecture §8.1, §10.4)'
     expect(auth.signOut).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['the same role', fakeTokens('client', nowSeconds + 3600, undefined, 'someone-else')],
+    ['another role', therapist],
+  ])(
+    "a refresh that hands over another user's tokens (%s: someone else signed in on this device) ends the session and leaves theirs alone",
+    (_case, theirs) => {
+      scheduler.run(({ cold, expectObservable }) => {
+        auth.refresh.mockReturnValue(cold('--r|', { r: theirs }));
+        vm.start(expired);
+        expectObservable(vm.accessToken$).toBe('--n|', { n: null });
+        expectObservable(vm.page$).toBe('c-s', { c: 'client', s: 'signIn' });
+        expectObservable(vm.signedOut$).toBe('--s', { s: 'refresh_refused' });
+      });
+      expect(auth.signOut).not.toHaveBeenCalled();
+    },
+  );
+
   it('a refresh refused for a passing reason (a lockout) fails this request with that reason and keeps the session', () => {
     scheduler.run(({ cold, expectObservable }) => {
       const lockout = new AuthError('too_many_attempts');

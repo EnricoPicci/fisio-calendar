@@ -55,6 +55,19 @@ describe('C1 Client sign-in with a one-time code (architecture §3.3, §10.4)', 
     expect(session.start).not.toHaveBeenCalled();
   });
 
+  it('a code that yields a therapist token is refused like an unusable account: the therapist signs in only through TOTP', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      atCodeStep();
+      auth.confirmCode.mockReturnValue(cold('--t|', { t: fakeTokens('therapist', 1_800_000_000) }));
+      auth.signOut.mockReturnValue(of(undefined));
+      void vm.confirmCode('12345678');
+      expectObservable(vm.error$).toBe('n-e', { n: null, e: strings.auth.errors.not_authorized });
+      expectObservable(vm.step$).toBe('c-e', { c: 'code', e: 'email' });
+    });
+    expect(session.start).not.toHaveBeenCalled();
+    expect(auth.signOut).toHaveBeenCalledTimes(1);
+  });
+
   it('expired code: error$ explains and step$ returns to email for a new code', () => {
     scheduler.run(({ cold, expectObservable }) => {
       atCodeStep();
@@ -341,14 +354,31 @@ describe('T1 Therapist sign-in with password and TOTP (architecture §3.3, §8.1
     });
   });
 
-  it('a password sign-in without an MFA step signs in at once (TOTP not yet enrolled)', () => {
+  it('a password sign-in completed without the TOTP step is refused: a password alone never signs the therapist in (§15), the provider is signed out', () => {
     scheduler.run(({ cold, expectObservable }) => {
       auth.signInWithPassword.mockReturnValue(
         cold('-s|', { s: { kind: 'signed_in' as const, tokens: therapistTokens } }),
       );
+      auth.signOut.mockReturnValue(of(undefined));
+      void vm.signInWithPassword('t@example.it', 'password-of-twelve');
+      expectObservable(vm.busy$).toBe('tf', { t: true, f: false });
+      expectObservable(vm.step$).toBe('p', { p: 'password' });
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.auth.errors.not_authorized });
+    });
+    expect(session.start).not.toHaveBeenCalled();
+    expect(auth.signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('the provider failing to forget the refused password sign-in does not change the refusal', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.signInWithPassword.mockReturnValue(
+        cold('-s|', { s: { kind: 'signed_in' as const, tokens: therapistTokens } }),
+      );
+      auth.signOut.mockReturnValue(cold('-#', undefined, offline()));
       void vm.signInWithPassword('t@example.it', 'password-of-twelve');
       expectObservable(vm.step$).toBe('p', { p: 'password' });
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.auth.errors.not_authorized });
     });
-    expect(session.start).toHaveBeenCalledWith(therapistTokens);
+    expect(session.start).not.toHaveBeenCalled();
   });
 });
