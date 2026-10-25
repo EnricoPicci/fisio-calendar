@@ -116,6 +116,18 @@
 
 ## Auth
 
+### Bearer tokens through CloudFront OAC to the Function URL
+
+**What:** Decide how the SPA's access token reaches the `api` Lambda behind CloudFront, then make `authorize` (`apps/api/src/http/access.ts`), the SPA `ApiClient` and the CDK `App` stack agree. Options: (a) a custom header such as `x-fisio-authorization: Bearer …`, forwarded by the origin request policy, with the API reading it in the cloud; (b) a Lambda Web Function origin with OAC signing behaviour `always-amz-auth`, which keeps the viewer's `Authorization`; (c) another design. Add a `dev` smoke step that calls `GET /api/v1/me` through CloudFront with a real token.
+
+**Why:** OAC signing behaviour `always` overwrites the viewer's `Authorization` header with CloudFront's SigV4 signature. `no-override` passes it unsigned, so the `AWS_IAM` Function URL refuses it, and `always-amz-auth` is valid only for Lambda Web Function origins (AWS docs: "Restrict access to an AWS Lambda function URL origin", `OriginAccessControlConfig.signingBehavior`). As designed (§8.2 bearer in `Authorization`, §9.1 OAC + IAM Function URL), every member and therapist route would answer 401 in `dev`/`prod`, while every local spec passes. It fails closed.
+
+**Context:** Red-team finding in the WP0.4 `/ship` review, verified against the AWS docs. The decision touches `infra/` and the SPA, so it was deferred (CLAUDE.md: ask before changing `infra/`; never widen a WP). Architecture §9.1 carries an open-decision note.
+
+**Effort:** S (code) once decided
+**Priority:** P1
+**Depends on:** Must be settled before WP0.9 (CDK `App` stack) and WP0.7 (SPA `ApiClient`).
+
 ### Email case and id format across Cognito and the auth emulator
 
 **What:** Make sure every path that stores or compares an email uses `EmailSchema` (trimmed, lower-cased): sign-up, the therapist's client invite, Cognito `username`/`email` attributes, and the emulator. Check that the emulator issues `sub` values that `ClientIdSchema` (`z.uuid()`) accepts, the same version Cognito uses.
@@ -128,17 +140,29 @@
 **Priority:** P2
 **Depends on:** The Cognito and auth-emulator work packages.
 
-### Bearer tokens through CloudFront OAC to the Function URL
+### Pin the therapist token to the stored therapist id
 
-**What:** Decide how the SPA's access token reaches the `api` Lambda behind CloudFront, then make `authorize` (`apps/api/src/http/access.ts`), the SPA `ApiClient` and the CDK `App` stack agree. Options: (a) a custom header such as `x-fisio-authorization: Bearer …`, forwarded by the origin request policy, with the API reading it in the cloud; (b) a Lambda Web Function origin with OAC signing behaviour `always-amz-auth`, which keeps the viewer's `Authorization`; (c) another design. Add a `dev` smoke step that calls `GET /api/v1/me` through CloudFront with a real token.
+**What:** Store the therapist's Cognito `sub` in the tenant's Settings item when the bootstrap CLI creates it, and make `authorize` (`apps/api/src/http/access.ts`) refuse a `role: therapist` token whose `sub` differs. The item is already read on every therapist request, so only the projection changes. Add a spec: a therapist-role token with another `sub` → 403 on every protected route.
 
-**Why:** OAC signing behaviour `always` overwrites the viewer's `Authorization` header with CloudFront's SigV4 signature. `no-override` passes it unsigned, so the `AWS_IAM` Function URL refuses it, and `always-amz-auth` is valid only for Lambda Web Function origins (AWS docs: "Restrict access to an AWS Lambda function URL origin", `OriginAccessControlConfig.signingBehavior`). As designed (§8.2 bearer in `Authorization`, §9.1 OAC + IAM Function URL), every member and therapist route would answer 401 in `dev`/`prod`, while every local spec passes. It fails closed.
+**Why:** Today any validly signed access token with `role: therapist` and the tenant id gets full `/admin/*` access, whatever its `sub`. All admin privilege rests on the pre-token-generation trigger and the Cognito attribute and group setup; one wrong write permission would let a client become the therapist with no check left in the API.
 
-**Context:** Red-team finding in the WP0.4 `/ship` review, verified against the AWS docs. The decision touches `infra/` and the SPA, so it was deferred (CLAUDE.md: ask before changing `infra/`; never widen a WP). Architecture §9.1 carries an open-decision note.
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review. The bootstrap CLI (`pnpm bootstrap:therapist`) and the Settings item's fields land in WP0.5 and WP1.1.
 
-**Effort:** S (code) once decided
-**Priority:** P1
-**Depends on:** Must be settled before WP0.9 (CDK `App` stack) and WP0.7 (SPA `ApiClient`).
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.5 (bootstrap writes the Settings item).
+
+### Validate the issuer URL at cold start
+
+**What:** In `loadConfig` (`apps/api/src/config.ts`), refuse an `AUTH_ISSUER` with a trailing slash and any scheme but `https:` (allowing loopback `http:` for `local` and `test`), with `config.spec.ts` cases.
+
+**Why:** `z.url()` accepts `https://x/p/`, `http:` and `ftp:`. The derived JWKS URI drops a trailing slash but the issuer passed to the verifier keeps it, so the `iss` check fails on every token: a `JwtBaseError` outside `SERVER_FAULTS`, so every user gets an unlogged 401 — the failure the 500 rule exists to prevent.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review. The CDK `App` stack sets the variable in WP0.9.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9.
 
 ### JWKS back-off answers 401 for a new signing key
 
@@ -163,6 +187,34 @@
 **Effort:** S
 **Priority:** P3
 **Depends on:** WP0.9 (Lambda deployed and measurable).
+
+### Comment and doc follow-ups from the WP0.4 final review
+
+**What:**
+- `InvalidTokenError`'s docstring (`apps/api/src/identity/token-verifier.ts`) still says "for logs only"; its presence as the `ApiError` cause now picks the `Bearer error="invalid_token"` challenge.
+- `bearerChallenge` (`apps/api/src/http/problem.ts`) recognises that cause by class name; set the challenge explicitly where `authorize` builds the error (or use `instanceof`), and drop "Recognised by name, like the domain errors".
+- The two challenge strings are written in `problem.ts` and again in `BEARER_CHALLENGE` (`apps/api/src/http/responses.ts`); define them once and build the OpenAPI enum from it.
+- Architecture §8.2 and the inline comment in `token-verifier.ts` still say only an unfetchable or unparsable JWKS is a 500; add a key that cannot verify signatures (`use`, `kty`).
+
+**Why:** Each comment now disagrees with the code, or invites the two copies to drift; the specs pin the behaviour, so nothing is broken today.
+
+**Context:** Maintainability findings from the final `/ship` review pass of WP0.4, deferred by the owner so the review could converge. WP0.5 edits `apps/api/src/identity/` anyway.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.5.
+
+### Case-insensitive bearer scheme
+
+**What:** Match the `Bearer` scheme case-insensitively in `authorize` (`apps/api/src/http/access.ts`, `BEARER`), with a spec for `bearer <token>`.
+
+**Why:** RFC 9110 §11.1 makes the auth scheme case-insensitive; a client sending `bearer` gets a 401 today. Our own SPA sends `Bearer`, so this is conformance, not a live bug.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
 
 ## Web app
 
@@ -230,6 +282,30 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Priority:** P2
 **Depends on:** None technical; a decision on timing.
 
+### API responses are never cached
+
+**What:** Add one root middleware in `apps/api/src/http/app.ts` that sets `Cache-Control: no-store` on every API response (problem+json included), and make the CDK `App` stack name the `/api/*` behaviour's cache policy (`CachingDisabled`) in architecture §9.1, with an infra assertion.
+
+**Why:** `GET /me` returns personal data, and neither `infra/` nor the architecture names the `/api/*` cache policy yet; a caching default in front would serve one user's profile to another. The header closes it whatever the distribution's policy turns out to be.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (CDK `App` stack).
+
+### Move the Lambda adapter to `@hono/aws-lambda`
+
+**What:** Replace `hono/aws-lambda` in `apps/api/src/handlers/api.ts` with the `@hono/aws-lambda` package (a new dependency: ask first), and check in the bundle smoke that a request the adapter cannot build still answers problem+json, not plain-text `Invalid request` / `Internal Server Error`.
+
+**Why:** `hono/aws-lambda` is marked deprecated in its own source ("will be removed in v5"). Harmless while `hono` stays on `^4`.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9 (bundle smoke), or the next `hono` major.
+
 ## Local stack and test harness
 
 ### Dependency direction between testkit and tools/local
@@ -243,6 +319,18 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 **Effort:** S
 **Priority:** P2
 **Depends on:** WP0.5 (before `tools/local` imports `apps/api`).
+
+### Keep every failure in `InProcessAsyncInvoker.settled()`
+
+**What:** Make `settled()` in `packages/domain/src/ports.ts` throw an `AggregateError` when more than one invoked function failed, and track "has failed" separately from the value so a rejection with `undefined` is not dropped. Cover both in `packages/domain/test/ports.spec.ts`.
+
+**Why:** Today it rethrows only the first failure (`const [first] = this.#failures.splice(0)`) although its doc says a failure is never lost; a journey that fires two notifier invocations would hide the second error.
+
+**Context:** Claude adversarial finding in the WP0.4 `/ship` review. Nothing invokes it until the notifier wiring in WP0.6.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.6.
 
 ### Local API defaults from their single source
 
