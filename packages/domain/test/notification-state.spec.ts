@@ -122,6 +122,17 @@ describe('S3 Delivery: notification state machine', () => {
     expect(failOnce(newPendingState(T0), T0, 42).state.lastError).toBe('42');
   });
 
+  // Value: protects=an accepted message is always marked sent, whatever the adapter hands back as its id; fails_when=markSent calls .trim() on a non-string (the throw leaves the item in sending and the sweep sends the email again) or stores untrimmed ids; why_new=TODOS "Notifier edge cases" (WP0.2 review), now that adapters exist; seam=none; no_claim=what each adapter returns (channel specs)
+  it('provider accepted with a non-string or padded id → sent, the id stored only as a trimmed string', () => {
+    const sending = startDelivery(newPendingState(T0), T0);
+    for (const odd of [42, null, { id: 'x' }]) {
+      const sent = markSent(sending, at(1), odd);
+      expect(sent.status).toBe('sent');
+      expect(sent).not.toHaveProperty('providerMessageId');
+    }
+    expect(markSent(sending, at(1), ' ses-1 ').providerMessageId).toBe('ses-1');
+  });
+
   it('a sent notification does not keep the error of an earlier attempt', () => {
     const retried = failOnce(newPendingState(T0), T0, new RetryableError('busy')).state;
     const sent = markSent(startDelivery(retried, at(1)), at(1), 'm-2');

@@ -120,20 +120,23 @@ export function startDelivery(state: DeliveryState, now: Date): DeliveryState {
 
 /**
  * sending → sent. The provider has accepted the message, so the item is sent even when the
- * provider returned no id; a missing or blank id is not stored.
+ * provider returned no id; a missing, blank or non-string id is not stored, and a stored one is
+ * trimmed. It never throws on the id: the message is already out, and a throw here would leave
+ * the item in `sending` for the sweep to send again.
  */
 export function markSent(
   state: DeliveryState,
   now: Date,
-  providerMessageId?: string,
+  providerMessageId?: unknown,
 ): DeliveryState {
   if (state.status !== 'sending') throw new InvalidTransitionError('mark sent', state.status);
   const { lastError: _dropped, providerMessageId: _previous, ...rest } = state;
   const iso = now.toISOString();
+  const id = typeof providerMessageId === 'string' ? providerMessageId.trim() : '';
   return {
     ...rest,
     status: 'sent',
-    ...(providerMessageId?.trim() ? { providerMessageId } : {}),
+    ...(id ? { providerMessageId: id } : {}),
     sentAt: iso,
     updatedAt: iso,
   };

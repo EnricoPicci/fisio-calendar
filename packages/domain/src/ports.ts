@@ -2,7 +2,7 @@
  * Ports to the outside world that more than one package implements (docs/architecture.md §4.1,
  * principle 6); `Clock` lives in clock.ts, `IdentityProvider` in identity.ts. They sit here, free
  * of I/O, so the API, the local runtime and the testkit doubles (`FakeChannel`) share one contract
- * and the testkit never depends on `apps/api`. WP0.6 adds the notifier that uses them.
+ * and the testkit never depends on `apps/api`. The notifier (`apps/api/src/notify`) uses them.
  */
 
 /** The Lambda functions the API and the jobs handler start without waiting for them. */
@@ -37,9 +37,10 @@ export class InProcessAsyncInvoker implements AsyncInvoker {
     const handler = this.#handlers[target];
     if (!handler) throw new Error(`No in-process handler for async target "${target}"`);
     // Started on a later task and never awaited here: the caller goes on first, as it does after
-    // Lambda has queued the event.
+    // Lambda has queued the event. The handler gets a JSON copy, as Lambda.invoke(Event) sends it.
+    const payload: unknown = JSON.parse(JSON.stringify(event));
     const run = new Promise<void>((resolve) => laterTask(resolve))
-      .then(() => handler(event))
+      .then(() => handler(payload))
       .catch((error: unknown) => {
         this.#failures.push(error);
       })
@@ -74,6 +75,19 @@ export interface OutboundMessage {
   readonly subject: string;
   readonly text: string;
   readonly html?: string;
+}
+
+/** The email header every channel sets to the message's `notificationKey`, for tracing. */
+export const NOTIFICATION_KEY_HEADER = 'X-Fisio-Notification-Key';
+
+/**
+ * True when an email channel may send to `to`: one mailbox, nothing a mail library or provider
+ * could read as a list or a display name (nodemailer reads `x y@example.test` as
+ * `y@example.test`). The provider judges the rest of the syntax. Every email adapter refuses
+ * anything else with a `PermanentError` (`NotificationChannel.contract.spec.ts`).
+ */
+export function isSingleMailbox(to: string): boolean {
+  return /^[^\s,;<>()"]+$/.test(to);
 }
 
 export interface SendResult {

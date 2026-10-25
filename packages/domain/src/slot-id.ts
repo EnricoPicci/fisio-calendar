@@ -38,12 +38,12 @@ export interface SlotIdParts {
 }
 
 export class InvalidSlotIdError extends Error {
-  constructor(
-    readonly input: string,
-    reason: string,
-  ) {
+  readonly input: string;
+
+  constructor(input: string, reason: string) {
     super(`Invalid SlotId "${input}": ${reason}`);
     this.name = 'InvalidSlotIdError';
+    this.input = input;
   }
 }
 
