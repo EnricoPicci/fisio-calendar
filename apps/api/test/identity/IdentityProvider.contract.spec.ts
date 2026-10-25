@@ -118,8 +118,10 @@ export function describeIdentityProviderContract(
     it('a deleted user is gone: operations on it are refused and the email is free again', async () => {
       const email = uniqueEmail('cancella');
       const user = await t.provider.createUser({ email, role: 'client' });
+      const device = await t.signIn(email);
       await t.provider.deleteUser(user.userId);
       expect(await t.provider.findUserByEmail(email)).toBeUndefined();
+      expect(await device.refresh()).toBe(false);
       for (const operation of [
         () => t.provider.disableUser(user.userId),
         () => t.provider.enableUser(user.userId),

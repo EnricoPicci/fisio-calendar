@@ -140,6 +140,7 @@ export class EmulatorStore {
   /** Sets user fields (`undefined` values are skipped); a missing user is not found. */
   async updateUser(userId: string, changes: UserChanges): Promise<void> {
     const set = Object.entries(changes).filter(([, value]) => value !== undefined);
+    if (set.length === 0) return;
     try {
       await this.doc.send(
         new UpdateCommand({

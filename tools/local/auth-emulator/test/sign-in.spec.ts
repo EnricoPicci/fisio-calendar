@@ -1,6 +1,7 @@
 import { closeTestDocumentClient } from '@fisio/testkit';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { AuthError, type SignInStep } from '../src/emulator';
+import { sha256 } from '../src/secrets';
 import { jwtPayload } from '../src/testing';
 import { emulatorHarness, SPEC_NOW, THERAPIST_PASSWORD } from './harness';
 
@@ -122,6 +123,8 @@ describe('C1 Sign in without a password (local auth emulator)', () => {
     expect(await refusal(h.emulator.answerEmailOtp(during, '00000000'))).toBe('too_many_attempts');
 
     h.clock.advance({ minutes: 15 });
+    // The locked session was ended, not just left to expire (that would be code_expired).
+    expect(await refusal(h.emulator.answerEmailOtp(session, wrong))).toBe('invalid_session');
     const after = sessionOf(await h.emulator.startEmailOtp(user.email));
     await expect(h.emulator.answerEmailOtp(after, h.lastCode(user.email))).resolves.toHaveProperty(
       'accessToken',
@@ -240,6 +243,22 @@ describe('C1 Sign in without a password (local auth emulator)', () => {
       h.emulator.refresh(tokens.refreshToken),
     ]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+
+    // The race at the store, independent of request timing: one take wins.
+    const next = results.find((result) => result.status === 'fulfilled');
+    if (next?.status !== 'fulfilled') throw new Error('Expected one renewal');
+    const hash = sha256(next.value.refreshToken);
+    const takes = await Promise.all([h.store.takeRefresh(hash), h.store.takeRefresh(hash)]);
+    expect(takes.toSorted()).toEqual([false, true]);
+  });
+
+  // Value: protects=a count a successful sign-in just cleared is not rebuilt as a lock; fails_when=lockAttempts loses its attribute_exists condition and writes a lock without failures; why_new=state-machines finding (WP0.5); seam=the store; no_claim=none beyond protects
+  it('a lock arriving after a successful sign-in cleared the count is dropped', async () => {
+    const email = 'pulita@example.test';
+    await h.store.recordFailure(email, h.clock.now(), 900);
+    await h.store.clearAttempts(email);
+    await h.store.lockAttempts(email, '2027-03-01T08:15:00.000Z');
+    expect(await h.store.getAttempts(email)).toBeUndefined();
   });
 });
 
@@ -294,6 +313,8 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     expect(await refusal(h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD))).toBe(
       'too_many_attempts',
     );
+    // The step opened before the lock is locked too, even with the right code.
+    expect(await refusal(h.emulator.answerTotp(session, right))).toBe('too_many_attempts');
   });
 
   // Value: protects=a TOTP code is good once, as on Cognito; fails_when=the same code signs in twice within its 90-second window; why_new=review finding (WP0.5); seam=FixedClock; no_claim=clock drift beyond one step
@@ -449,10 +470,7 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
       'code_mismatch',
       'too_many_attempts',
     ]);
-    h.clock.advance({ minutes: 15 });
-    expect(await refusal(h.emulator.answerTotp(step, await h.totp(therapist.secret)))).toBe(
-      'invalid_session',
-    );
+    expect(await h.store.getSession(step)).toBeUndefined();
 
     const user = await h.identity.createUser({ email: 'sbaglia@example.test', role: 'therapist' });
     const enrolment = await h.emulator.startSetup(
@@ -466,6 +484,7 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
       setupAnswers.push(await refusal(h.emulator.verifyTotpSetup(enrolment.session, bad)));
     }
     expect(setupAnswers.at(-1)).toBe('too_many_attempts');
+    expect(await h.store.getSession(enrolment.session)).toBeUndefined();
     expect(await h.identity.findUserByEmail(user.email)).toMatchObject({
       passwordSet: false,
       totpEnrolled: false,
@@ -499,5 +518,47 @@ describe('T1 Sign in with TOTP (local auth emulator)', () => {
     await expect(
       h.emulator.verifyTotpSetup(enrolment.session, await h.totp(enrolment.secret)),
     ).resolves.toHaveProperty('accessToken');
+  });
+
+  // Value: protects=a locked email cannot finish an enrolment, even with the right code, and nothing is stored; fails_when=verifyTotpSetup skips the lock check; why_new=state-machines finding (WP0.5); seam=none; no_claim=none beyond protects
+  it('an enrolment is refused while its email is locked, and stores nothing', async () => {
+    const user = await h.identity.createUser({ email: 'chiusa@example.test', role: 'therapist' });
+    const enrolment = await h.emulator.startSetup(
+      await h.identity.startPasswordSetup(user.userId),
+      THERAPIST_PASSWORD,
+    );
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await refusal(h.emulator.signInWithPassword(user.email, 'sbagliata-sbagliata'));
+    }
+    expect(
+      await refusal(h.emulator.verifyTotpSetup(enrolment.session, await h.totp(enrolment.secret))),
+    ).toBe('too_many_attempts');
+    expect(await h.identity.findUserByEmail(user.email)).toMatchObject({ passwordSet: false });
+  });
+
+  // Value: protects=a double submit of the right TOTP code, at sign-in or at enrolment, succeeds once; fails_when=the session is no longer spent with a conditional delete; why_new=state-machines finding (WP0.5): only the email code was raced; seam=DynamoDB Local conditional writes; no_claim=request timing
+  it('two answers with the right TOTP code at once succeed once, at sign-in and at enrolment', async () => {
+    const therapist = await h.therapist();
+    const step = sessionOf(
+      await h.emulator.signInWithPassword(therapist.email, THERAPIST_PASSWORD),
+    );
+    const code = await h.totp(therapist.secret);
+    const signIns = await Promise.allSettled([
+      h.emulator.answerTotp(step, code),
+      h.emulator.answerTotp(step, code),
+    ]);
+    expect(signIns.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+
+    const user = await h.identity.createUser({ email: 'doppia@example.test', role: 'therapist' });
+    const enrolment = await h.emulator.startSetup(
+      await h.identity.startPasswordSetup(user.userId),
+      THERAPIST_PASSWORD,
+    );
+    const first = await h.totp(enrolment.secret);
+    const setups = await Promise.allSettled([
+      h.emulator.verifyTotpSetup(enrolment.session, first),
+      h.emulator.verifyTotpSetup(enrolment.session, first),
+    ]);
+    expect(setups.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
   });
 });

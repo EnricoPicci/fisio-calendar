@@ -93,7 +93,7 @@ describe('bootstrap:therapist (architecture §11.5)', () => {
   });
 
   // Value: protects=a password without an enrolled authenticator is not a finished setup (Cognito with MFA optional can reach that state), and the sessions it opened end; fails_when=bootstrap stops issuing links once a password exists, or skips the sign-out; why_new=red-team and security findings (WP0.5); seam=a stub port, since the emulator stores both together; no_claim=Cognito's MFA_SETUP challenge (WP0.10)
-  it('keeps issuing a setup link while TOTP is not enrolled, even with a password, and signs her out first', async () => {
+  it('keeps issuing a setup link while TOTP is not enrolled, even with a password, and signs her out', async () => {
     const user: IdentityUser = {
       userId: '6a1f0c7e-1d2b-4c3d-9e8f-0a1b2c3d4e5f',
       email: 'solo-password@example.test',
@@ -117,7 +117,8 @@ describe('bootstrap:therapist (architecture §11.5)', () => {
     });
     const result = await bootstrapTherapist({ ...deps, identity }, input(user.email));
     expect(code(result.setupLink)).toBe('codice-nuovo');
-    expect(calls).toEqual(['globalSignOut', 'startPasswordSetup']);
+    // Signed out after the code replaced the password, so no sign-in slips in between.
+    expect(calls).toEqual(['startPasswordSetup', 'globalSignOut']);
   });
 
   // Value: protects=an enrolled therapist whose TOTP preference was off gets it back and no new link (which on Cognito would replace her password); fails_when=bootstrap decides from the read taken before it restored the preference; why_new=state-machines finding (WP0.5); seam=a stub port shaped like Cognito, where enrolment shows only while the preference is on; no_claim=Cognito's real UserMFASettingList (WP0.10 spike)

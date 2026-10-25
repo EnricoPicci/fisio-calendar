@@ -117,7 +117,10 @@ export class CognitoIdentityProvider implements IdentityProvider {
     };
   }
 
-  /** AdminDisableUser revokes access tokens; the sign-out ends the refresh tokens too (§8.1). */
+  /**
+   * The sign-out ends the refresh tokens too (§8.1). Access tokens already issued stay valid for
+   * the API, which verifies them offline, until they run out (60 min).
+   */
   async disableUser(userId: string): Promise<void> {
     await this.#admin(() =>
       this.cognito.send(

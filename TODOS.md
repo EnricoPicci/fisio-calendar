@@ -336,6 +336,18 @@
 **Priority:** P4
 **Depends on:** None.
 
+### Revoke the therapist's access token
+
+**What:** Decide whether a block or a global sign-out must also stop the therapist's access tokens already issued. Options: a stored `signedOutAt` that `authorize` (`apps/api/src/http/access.ts`) compares with the token's `auth_time`, or a shorter access-token lifetime for the therapist's app client.
+
+**Why:** The API verifies access tokens offline, so `AdminUserGlobalSignOut` and `AdminDisableUser` end only the refresh tokens for it. Clients are covered by the per-request status check; the therapist's check only asks whether the Settings item exists, so a session opened in the password-only window, or a blocked therapist, keeps API access for up to 60 minutes.
+
+**Context:** Red-team finding in the WP0.5 `/ship` review (cycle 2).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9.
+
 ### A spec for the bootstrap CLI's run
 
 **What:** Let `runBootstrapCli` take its adapters (or an adapters factory), then spec exit 0 with the printed link, the "no setup link" and "re-enabled" lines, and exit 1 on a `BootstrapError`.

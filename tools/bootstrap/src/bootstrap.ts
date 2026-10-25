@@ -62,9 +62,10 @@ export async function bootstrapTherapist(
   const current = (await deps.identity.findUserByEmail(email)) ?? user;
   if (current.passwordSet && current.totpEnrolled) return result;
 
-  // A password without TOTP is a setup to redo: end the sessions that password opened.
-  if (current.passwordSet) await deps.identity.globalSignOut(user.userId);
   const code = await deps.identity.startPasswordSetup(user.userId);
+  // A password without TOTP is a setup to redo. Once the code has replaced that password, end the
+  // refresh tokens it opened; access tokens already issued run out on their own (60 min).
+  if (current.passwordSet) await deps.identity.globalSignOut(user.userId);
   const link = new URL(input.setupUrl);
   link.hash = new URLSearchParams({ email, code }).toString();
   return { ...result, setupLink: link.toString() };
