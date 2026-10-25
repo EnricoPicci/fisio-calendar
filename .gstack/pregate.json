@@ -75,6 +75,11 @@
     "apps/*/vitest.config.ts": [],
     "apps/*/src/index.ts": [],
     "apps/api/src/handlers/api.ts": [],
+    "apps/api/src/handlers/jobs.ts": [],
+    "apps/api/src/handlers/notifier.ts": [],
+    "tools/local/src/smtp-email-channel.ts": [
+      "apps/api/test/notify/NotificationChannel.contract.spec.ts"
+    ],
     "docs/openapi.json": ["apps/api/test/openapi.spec.ts"],
     "packages/*/package.json": [],
     "packages/*/tsconfig.json": [],

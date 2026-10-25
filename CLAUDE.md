@@ -13,11 +13,11 @@ locally. The design is `docs/architecture.md`; the work breakdown is `docs/imple
 |---|---|
 | `pnpm install` | pnpm 12 via `corepack enable` (version pinned in `package.json`); develop on Node 24 (`.nvmrc`). The Lambdas run Node 22 (architecture §4.3), so code must run on 22 too: `engines.node` stays `>=22.12` on purpose |
 | `pnpm local:up` / `local:down` | Docker: DynamoDB Local (:8000), Mailpit (UI `http://localhost:8025`), then the `fisio-local` table (Node >= 22.18) / stop them (in-memory: data is dropped) |
-| `pnpm dev` | api, auth emulator, web on the local stack, in watch mode (today: the api on `http://127.0.0.1:3000/api/v1` and the auth emulator on `http://127.0.0.1:9100/local`, which prints one-time codes to its console until WP0.6; the web app arrives in WP0.7) |
+| `pnpm dev` | api, auth emulator, web on the local stack, in watch mode (today: the api on `http://127.0.0.1:3000/api/v1` and the auth emulator on `http://127.0.0.1:9100/local`, whose one-time codes and every other local email land in Mailpit; the web app arrives in WP0.7) |
 | `pnpm openapi` | regenerate `docs/openapi.json` from the route declarations; a spec fails while it is out of date |
 | `pnpm test` | **the complete local suite — the only definition of "green"** (domain, API, view-models, headless journeys, templates, infra assertions, bundle smoke, Playwright binding); needs `pnpm local:up` running |
 | `pnpm typecheck` / `pnpm lint` / `pnpm lint:fix` | `tsc --noEmit` per package / Biome check / Biome fix |
-| `pnpm tick --now <iso>` | run the scheduler (`jobs` handler) at a chosen instant |
+| `pnpm tick --now <iso>` | run the scheduler's tick (`jobs` code, notifier in-process, email to Mailpit) at a chosen UTC instant; also `POST /__dev/tick {now}` |
 | `pnpm seed` | therapist (via bootstrap, setup completed: prints password and TOTP secret) + a dozen clients on the local stack; rules and slots arrive in WP1.2 |
 | `pnpm bootstrap:therapist --stage local\|dev\|prod --email <addr>` | the only way to create the therapist account; prints a one-time setup link until she has a password and an enrolled authenticator (`dev`/`prod` need `COGNITO_USER_POOL_ID` and `WEB_ORIGIN`) |
 | `pnpm deploy:dev` | `pnpm test` first, then `cdk diff` / `deploy` / smoke on `dev`; refuses when red |

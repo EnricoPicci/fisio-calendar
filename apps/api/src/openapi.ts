@@ -1,8 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { systemClock } from '@fisio/domain';
-import type { AuthDeps } from './http/access';
-import { createApp, openApiDocument } from './http/app';
+import { type AppDeps, createApp, openApiDocument } from './http/app';
 import { consoleErrorLogger } from './http/router';
 
 /**
@@ -16,10 +15,16 @@ export const OPENAPI_FILE = fileURLToPath(new URL('../../../docs/openapi.json', 
 const unused = (): never => {
   throw new Error('Not available while generating the OpenAPI document');
 };
-const documentationDeps: AuthDeps = {
+const unusedPort = <T>() =>
+  new Proxy({}, { get: (_, name) => (name === 'then' ? undefined : unused) }) as T;
+const documentationDeps: Omit<AppDeps, 'clock' | 'log'> = {
   tokens: { verify: unused },
-  clients: { get: unused, put: unused } as unknown as AuthDeps['clients'],
-  settings: { exists: unused, create: unused } as unknown as AuthDeps['settings'],
+  clients: unusedPort(),
+  settings: unusedPort(),
+  identity: unusedPort(),
+  notifications: unusedPort(),
+  invoker: unusedPort(),
+  webOrigin: 'https://fisio.invalid',
 };
 
 export function renderOpenApiJson(): string {

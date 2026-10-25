@@ -1,9 +1,11 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { DynamoDBClient, ListTablesCommand } from '@aws-sdk/client-dynamodb';
 import { type Problem, TenantIdSchema } from '@fisio/contracts';
 import { FixedClock } from '@fisio/domain';
 import {
   closeTestDocumentClient,
+  FakeChannel,
   freshTenant,
   TEST_TABLE,
   TestTokenIssuer,
@@ -13,8 +15,16 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { API_BASE_PATH } from '../src/http/app';
 import type { DevHooks } from '../src/http/dev';
 import { SettingsRepository } from '../src/repo/settings';
-import { createLambdaApp } from '../src/runtime/lambda';
+import {
+  createLambdaApp,
+  createLambdaJobs,
+  createLambdaNotifier,
+  SDK_CLIENT_CONFIG,
+} from '../src/runtime/lambda';
 import { createLocalApp } from '../src/runtime/local';
+import { parseTickArgs, USAGE } from '../src/runtime/tick';
+import { apiHarness } from './harness';
+import { rawItem, writeInvitation } from './notify/outbox';
 
 afterAll(closeTestDocumentClient);
 
@@ -27,6 +37,9 @@ const lambdaEnv = {
   TABLE_NAME: 'fisio-dev',
   AUTH_ISSUER: 'https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_example',
   AUTH_CLIENT_ID: 'example-client',
+  WEB_ORIGIN: 'https://fisio.example',
+  USER_POOL_ID: 'eu-central-1_example',
+  NOTIFIER_FUNCTION_NAME: 'fisio-dev-notifier',
   AWS_REGION: 'eu-central-1',
 };
 
@@ -125,6 +138,85 @@ describe('F Contracts and local stack: the local runtime verifies tokens against
       expect(await res.json()).toEqual({ role: 'therapist', therapistId });
       expect(requested).toEqual(['/local/.well-known/jwks.json']);
     } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+describe('S3 Delivery: the local runtime ticks and delivers with the real code (architecture §11.4)', () => {
+  // Value: protects=`POST /__dev/tick {now}` runs the real jobs and notifier at that instant (time travel), and `/__dev/deliver` at the app's clock; fails_when=local.ts keeps the no-op hooks, the notifier reads the system clock during a tick, or the tick returns before the in-process notifier finished; why_new=WP0.4 only had recording hooks; seam=FakeChannel instead of Mailpit, a spec tenant; no_claim=`pnpm tick` itself (same localTick)
+  it('/__dev/tick delivers what is due at the given instant; /__dev/deliver at the app clock', async () => {
+    const h = apiHarness();
+    const channel = new FakeChannel();
+    const { app } = createLocalApp(
+      { TABLE_NAME: TEST_TABLE, DYNAMODB_ENDPOINT: process.env.DYNAMODB_ENDPOINT },
+      { clock: h.clock, channel, tenantId: h.tenantId },
+    );
+    const later = await writeInvitation(h, { at: new Date('2027-03-01T09:00:00.000Z') });
+    const now = await writeInvitation(h);
+
+    expect((await app.request(post('/__dev/deliver'))).status).toBe(202);
+    expect(channel.sent.map((m) => m.to)).toEqual([now.to]);
+
+    const tickAt = '2027-03-01T09:30:00.000Z';
+    expect((await app.request(post('/__dev/tick', { now: tickAt }))).status).toBe(202);
+    expect(channel.sent.map((m) => m.to)).toEqual([now.to, later.to]);
+    expect(await rawItem(h, later)).toMatchObject({ status: 'sent', sentAt: tickAt });
+  });
+
+  // Value: protects=the notifier and jobs Lambda roots build from their own environment and refuse events they do not know without calling AWS; fails_when=a root reads another function's variables or a malformed event reaches DynamoDB; why_new=WP0.6 adds the two functions; seam=none; no_claim=the bundled handlers (bundle smoke, WP0.9)
+  it('the notifier and jobs Lambda roots build from their environment', async () => {
+    const table = { STAGE: 'dev', TABLE_NAME: 'fisio-dev', AWS_REGION: 'eu-central-1' };
+    const notifier = createLambdaNotifier({
+      ...table,
+      EMAIL_FROM_ADDRESS: 'noreply@fisio.example',
+    });
+    await expect(notifier({ kind: 'unknown' })).rejects.toThrow();
+    expect(
+      createLambdaJobs({
+        ...table,
+        NOTIFIER_FUNCTION_NAME: 'fisio-dev-notifier',
+        TENANT_ID: 'main',
+      }),
+    ).toEqual(expect.any(Function));
+    expect(() => createLambdaNotifier(table)).toThrow('EMAIL_FROM_ADDRESS');
+  });
+});
+
+describe('S3 Delivery: `pnpm tick --now <iso>` (architecture §11.4)', () => {
+  // Value: protects=the tick CLI runs at the instant asked for, now by default, and refuses anything but a canonical UTC instant; fails_when=--now is ignored, read in the host's zone, or a typo silently ticks at the real time; why_new=first tick CLI; seam=a fixed clock for the default; no_claim=the tick itself (spec above)
+  it('reads --now as a UTC instant, defaults to now, refuses anything else', () => {
+    const clock = new FixedClock('2027-03-01T08:00:00.000Z');
+    expect(parseTickArgs(['--now', '2027-03-27T18:00:00.000Z'], clock).toISOString()).toBe(
+      '2027-03-27T18:00:00.000Z',
+    );
+    expect(parseTickArgs([], clock)).toEqual(clock.now());
+    expect(() => parseTickArgs(['--now', '2027-03-27 19:00'], clock)).toThrow(USAGE);
+    expect(() => parseTickArgs(['--when', 'x'], clock)).toThrow();
+  });
+});
+
+describe('S3 Delivery: the Lambdas give up on a hung AWS request (architecture §5.4)', () => {
+  // Value: protects=a stalled AWS endpoint fails the request instead of holding it until the Lambda dies, so a hung SES send cannot outlive the sweep window and go out twice; fails_when=the client config drops throwOnRequestTimeout (the SDK then only logs a warning); why_new=ship adversarial review; seam=an HTTP server that never answers, the request timeout shortened for the spec; no_claim=the 10 s value itself
+  it('a request past its timeout rejects instead of waiting', async () => {
+    const server = createServer(() => {});
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const client = new DynamoDBClient({
+      ...SDK_CLIENT_CONFIG,
+      requestHandler: { ...SDK_CLIENT_CONFIG.requestHandler, requestTimeout: 200 },
+      endpoint: `http://127.0.0.1:${port}`,
+      region: 'eu-central-1',
+      credentials: { accessKeyId: 'spec', secretAccessKey: 'spec' },
+      maxAttempts: 1,
+    });
+    try {
+      await expect(client.send(new ListTablesCommand({}))).rejects.toMatchObject({
+        name: 'TimeoutError',
+      });
+    } finally {
+      client.destroy();
+      server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
   });

@@ -21,6 +21,9 @@ services:
 
   mailpit:
     image: axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48
+    environment:
+      # No reverse DNS of the SMTP client: inside Docker the lookup can stall a send for seconds.
+      MP_SMTP_DISABLE_RDNS: "true"
     ports:
       - "127.0.0.1:1025:1025" # SMTP, used by SmtpEmailChannel (WP0.6)
       - "127.0.0.1:8025:8025" # web UI and REST API

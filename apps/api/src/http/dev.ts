@@ -12,15 +12,9 @@ import type { ApiRouter } from './router';
 export interface DevHooks {
   /** Runs the jobs handler's tick at `now` (WP0.6). */
   tick(now: Date): Promise<void>;
-  /** Delivers the due notifications (WP0.6). */
+  /** Sweeps stale `sending` items, then delivers the due notifications, as the tick does (WP0.6). */
   deliver(): Promise<void>;
 }
-
-/** Until WP0.6 brings the jobs and notifier handlers, both hooks do nothing. */
-export const noDevHooks: DevHooks = {
-  tick: async () => {},
-  deliver: async () => {},
-};
 
 const AcceptedSchema = z.object({ accepted: z.literal(true) });
 

@@ -17,7 +17,8 @@ describe('OpenAPI document (architecture §5.2)', () => {
   // Value: protects=the document lists exactly the deployed routes with their access level, and no /__dev route; fails_when=a route is missing, a dev route leaks into the document, or x-access/security are dropped; why_new=first document; seam=none; no_claim=route behaviour
   it('lists the deployed routes with x-access and bearer security, and no /__dev route', () => {
     const doc = JSON.parse(renderOpenApiJson());
-    expect(Object.keys(doc.paths).sort()).toEqual(['/health', '/me']);
+    expect(Object.keys(doc.paths).sort()).toEqual(['/admin/clients', '/health', '/me']);
+    expect(doc.paths['/admin/clients'].post['x-access']).toBe('therapist');
     expect(doc.paths['/health'].get['x-access']).toBe('public');
     expect(doc.paths['/health'].get.security).toBeUndefined();
     expect(doc.paths['/me'].get['x-access']).toBe('member');

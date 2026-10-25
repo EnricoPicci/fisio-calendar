@@ -40,8 +40,9 @@ dev server), `404 not_found` and `500 internal_error`.
 | `POST /refresh` | `{ refreshToken }` | tokens (with a new refresh token) |
 
 Tokens are `{ accessToken, idToken, refreshToken, expiresIn }`: the answer routes return them bare;
-only `/password`, which may or may not need a TOTP step, wraps them as `{ kind: "signedIn", tokens }`. Until WP0.6 the codes are printed
-on the emulator's console; then they go to Mailpit. The signing key lives in memory and a restart
+only `/password`, which may or may not need a TOTP step, wraps them as `{ kind: "signedIn", tokens }`. One-time codes go to Mailpit
+(`SmtpEmailChannel` from `@fisio/local/smtp`; UI at http://localhost:8025), without the answer
+waiting for the delivery. The signing key lives in memory and a restart
 makes a new one: the API keeps the JWKS it fetched until it meets the new key's `kid`, so access
 tokens signed before the restart keep working until then (restart the API too for a clean cut).
 Refresh tokens are stored and survive a restart.

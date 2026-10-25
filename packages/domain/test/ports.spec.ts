@@ -15,6 +15,17 @@ describe('InProcessAsyncInvoker: the local and spec AsyncInvoker (architecture Â
     order.push('caller continues');
     await invoker.settled();
     expect(order).toEqual(['caller continues', 'run first', 'run second']);
+
+    // The handler gets a JSON copy of the event, as a Lambda payload arrives.
+    const received: unknown[] = [];
+    const copying = new InProcessAsyncInvoker({
+      notifier: async (event) => void received.push(event),
+    });
+    const event = { at: new Date(0), gone: undefined };
+    await copying.invoke('notifier', event);
+    await copying.settled();
+    expect(received).toEqual([{ at: '1970-01-01T00:00:00.000Z' }]);
+    expect(received[0]).not.toBe(event);
   });
 
   // Value: protects=a failing async run is reported, never lost; fails_when=the catch swallows the error; why_new=first invoker; seam=none; no_claim=how the notifier records failures (WP0.6)

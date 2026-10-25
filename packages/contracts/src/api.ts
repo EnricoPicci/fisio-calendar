@@ -1,6 +1,13 @@
 import { z } from 'zod';
 import { ERROR_CODES, type ErrorCode, PROBLEM_TYPE_PREFIX } from './errors';
-import { ClientIdSchema, EmailSchema, LocaleSchema, PhoneE164Schema } from './schemas';
+import {
+  ClientIdSchema,
+  ClientStatusSchema,
+  EmailSchema,
+  IsoDateTimeSchema,
+  LocaleSchema,
+  PhoneE164Schema,
+} from './schemas';
 
 /**
  * Request and response bodies of the API (docs/architecture.md §5.2), shared with the SPA. The
@@ -66,3 +73,28 @@ export const MeResponseSchema = z
   .discriminatedUnion('role', [ClientProfileSchema, TherapistProfileSchema])
   .meta({ id: 'Me' });
 export type MeResponse = z.infer<typeof MeResponseSchema>;
+
+/** `POST /admin/clients` (T7): the therapist adds a client, who is invited by email. */
+export const AddClientRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    email: EmailSchema,
+    phone: PhoneE164Schema.optional(),
+  })
+  .strict()
+  .meta({ id: 'AddClientRequest' });
+export type AddClientRequest = z.infer<typeof AddClientRequestSchema>;
+
+/** A client as the therapist sees it. */
+export const AdminClientSchema = z
+  .object({
+    clientId: ClientIdSchema,
+    name: z.string(),
+    email: EmailSchema,
+    phone: PhoneE164Schema.optional(),
+    status: ClientStatusSchema,
+    invitedAt: IsoDateTimeSchema.optional(),
+    createdAt: IsoDateTimeSchema,
+  })
+  .meta({ id: 'AdminClient' });
+export type AdminClient = z.infer<typeof AdminClientSchema>;

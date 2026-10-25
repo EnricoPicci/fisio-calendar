@@ -1,8 +1,13 @@
-import { closeTestDocumentClient } from '@fisio/testkit';
+import {
+  closeTestDocumentClient,
+  freshTenant,
+  TEST_TABLE,
+  testDocumentClient,
+} from '@fisio/testkit';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { AuthError, type SignInStep } from '../src/emulator';
 import { sha256 } from '../src/secrets';
-import { jwtPayload } from '../src/testing';
+import { createTestEmulator, jwtPayload } from '../src/testing';
 import { emulatorHarness, SPEC_NOW, THERAPIST_PASSWORD } from './harness';
 
 const h = emulatorHarness();
@@ -188,6 +193,21 @@ describe('C1 Sign in without a password (local auth emulator)', () => {
       kind: 'challenge',
       challenge: 'EMAIL_OTP',
       session: expect.any(String),
+    });
+  });
+
+  // Value: protects=the answer to a client's code request does not wait for the SMTP round trip, so its timing cannot tell clients from strangers; fails_when=startEmailOtp awaits the channel again; why_new=TODOS "Code delivery must not time the answer" (WP0.5 review), due when Mailpit replaced the console channel; seam=a channel whose send never settles; no_claim=equal database work for both (the lockout read now runs for every email, by inspection)
+  it('the answer does not wait for the code email to be sent', async () => {
+    const t = createTestEmulator({
+      doc: testDocumentClient(),
+      table: TEST_TABLE,
+      clock: h.clock,
+      channel: { channel: 'email', send: () => new Promise(() => {}) },
+      config: { poolId: freshTenant(), tenantId: freshTenant() },
+    });
+    const user = await t.identity.createUser({ email: 'lenta@example.test', role: 'client' });
+    await expect(t.emulator.startEmailOtp(user.email)).resolves.toMatchObject({
+      challenge: 'EMAIL_OTP',
     });
   });
 

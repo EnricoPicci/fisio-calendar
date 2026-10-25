@@ -34,21 +34,27 @@ const DAY_MS = 86_400_000;
  * (02:30 on 2027-03-28 in Rome), and in some zones a whole skipped day or a midnight shift.
  */
 export class NonexistentLocalTimeError extends RangeError {
-  constructor(
-    readonly date: string,
-    readonly time: string,
-    readonly timeZone: string,
-  ) {
+  readonly date: string;
+  readonly time: string;
+  readonly timeZone: string;
+
+  constructor(date: string, time: string, timeZone: string) {
     super(`${date} ${time} does not exist in ${timeZone}: the clocks skip it`);
     this.name = 'NonexistentLocalTimeError';
+    this.date = date;
+    this.time = time;
+    this.timeZone = timeZone;
   }
 }
 
 /** A time zone that is not an IANA name or offset the runtime knows, e.g. `Europe/Rme`. */
 export class InvalidTimeZoneError extends RangeError {
-  constructor(readonly timeZone: string) {
+  readonly timeZone: string;
+
+  constructor(timeZone: string) {
     super(`Unknown time zone "${timeZone}"`);
     this.name = 'InvalidTimeZoneError';
+    this.timeZone = timeZone;
   }
 }
 

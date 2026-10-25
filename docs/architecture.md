@@ -260,10 +260,11 @@ fisio-calendar/
 │     ├─ src/http/         Hono app, routes, middleware (jwt, client-status, errors → problem+json)
 │     ├─ src/usecases/     application services (BookSlot, CancelDay, GenerateSlots, CreateReminders, BuildDigest, …)
 │     ├─ src/repo/         DynamoDB repositories — the only place that builds keys (from domain ids)
-│     ├─ src/notify/       NotificationChannel adapters: SesEmailChannel (cloud), SmtpEmailChannel (local → Mailpit), FakeChannel (specs)
+│     ├─ src/notify/       notifier, SesEmailChannel (cloud); SmtpEmailChannel (local → Mailpit) lives in tools/local as `@fisio/local/smtp`, FakeChannel in testkit
 │     ├─ src/identity/     IdentityProvider port: CognitoIdentityProvider (cloud), LocalIdentityProvider (local emulator)
+│     ├─ src/jobs/         the scheduler's tick: runs each job in order (WP0.6: sweep and deliver-due)
 │     ├─ src/handlers/     Lambda entry points: api.ts, jobs.ts, notifier.ts, auth-triggers.ts
-│     ├─ src/runtime/      composition roots: lambda.ts (AWS adapters) and local.ts (local adapters, in-process AsyncInvoker, /__dev routes)
+│     ├─ src/runtime/      composition roots: lambda.ts (AWS adapters) and local.ts (local adapters, in-process AsyncInvoker, /__dev routes); tick.ts (the `pnpm tick` CLI)
 │     └─ test/             API specs (executable documentation), fault-injection doubles
 ├─ packages/
 │  ├─ domain/              pure TypeScript, no AWS: slot-id.ts, rules & slot generation (overlap invariant), booking policy, notification state machine, time helpers, shared ports (Clock, AsyncInvoker, NotificationChannel)
@@ -271,7 +272,7 @@ fisio-calendar/
 │  └─ testkit/             shared test tooling: in-process fetch adapter (Hono app.request), ObservableRecorder, TraceRecorder, JourneyHarness, FaultInjectingDynamo, fake JWTs, FakeChannel/Mailpit readers, journey report renderer
 ├─ infra/                  AWS CDK app (TypeScript): Stateful, App, Edge stacks + assertions + bundle smoke
 ├─ tools/
-│  ├─ local/               docker-compose (DynamoDB Local, Mailpit), auth emulator, tick runner, seed
+│  ├─ local/               docker-compose (DynamoDB Local, Mailpit), auth emulator, seed, table and SMTP helpers (`@fisio/local/table`, `@fisio/local/smtp`)
 │  ├─ bootstrap/           `bootstrap:therapist` CLI (same IdentityProvider port; local, dev, prod)
 │  └─ scripts/             repository tooling: placeholder scripts, specs for the Claude Code hooks
 ├─ e2e/                    Playwright journeys against the local stack
@@ -332,7 +333,7 @@ The SPA maps codes to Italian strings; specs assert codes, never sentences.
 | `POST /admin/bookings` `{slotId, clientId}` · `DELETE /admin/bookings/{id}` | therapist | T8 |
 | `GET /admin/notifications?from&status` · `POST /admin/notifications/{id}/retry` | therapist | T9 |
 | `GET /admin/dashboard` | therapist | T10 |
-| `POST /__dev/tick` `{now}` · `POST /__dev/deliver` | local runtime only | run the tick / deliver due items at a chosen instant; not mounted in the Lambda runtime (asserted by the bundle smoke, §10) |
+| `POST /__dev/tick` `{now}` · `POST /__dev/deliver` | local runtime only | run the tick at a chosen instant / sweep and deliver due items now; not mounted in the Lambda runtime (asserted by the bundle smoke, §10) |
 
 Authorisation: `/admin/*` requires the `therapist` role; `/me/*` and `/slots` require `client` or `therapist`; every client-scoped query takes the client id **from the token**, never from the request; every request first passes the client-status check (§8.2).
 
@@ -403,7 +404,7 @@ A `NOTIFICATION` item is the unit of work: `{kind, bookingId?, clientId?, channe
 
 - **Immediate**: after a successful commit the API (or the jobs Lambda) invokes `notifier` asynchronously (`InvocationType: Event`) with the notification ids it just wrote. Lambda's async invoke retries twice on its own; the conditional `pending → sending` update makes duplicate invocations harmless.
 - **Eventual**: every 15-minute tick runs deliver-due, which picks up anything the async invoke missed and every item whose back-off has elapsed. Worst-case delay for a confirmation whose async invoke failed: 15 minutes.
-- Locally the `AsyncInvoker` port is an in-process call (`setImmediate`), so the same code path runs on a laptop with no emulator.
+- Locally the `AsyncInvoker` port is an in-process call on a later task (`setTimeout(…, 0)`), so the same code path runs on a laptop with no emulator.
 
 Why not Streams: the outbox item plus deterministic keys already give the guarantee; Streams would add an event-source mapping, a DLQ, stream-specific retry semantics and a local poller for ~70 emails a day. The tick exists anyway. *(§14, D6.)*
 
@@ -913,7 +914,7 @@ Started with `pnpm local:up` (Docker containers) and `pnpm dev` (Node processes)
 | Cognito | **Local auth emulator** (`tools/local/auth-emulator`, ~1,300 lines of source): implements the `IdentityProvider` port over DynamoDB Local and a sign-in API with **email one-time codes** (8 digits, valid 5 minutes, delivered through the email channel → Mailpit; five wrong codes or passwords for one email lock it for 15 minutes; unknown, blocked and therapist emails get the same answer and no code) and **password + TOTP** for the therapist (`otplib`; the seed prints the secret). Issues RS256 JWTs with Cognito's claims and serves a JWKS; the API verifies them with the same `aws-jwt-verify` configuration, only the issuer URL differs. The SPA's `AuthService` has a `LocalAuthService` implementation selected at build time | Medium — same contracts and flows, not Cognito's code (see cloud-only list) |
 | SES | **Mailpit** (Docker): SMTP sink with a web UI and a REST API, via `SmtpEmailChannel`; bounce events are simulated by posting an SES-shaped SNS message to the local feedback handler | High for content, recipients and sequencing; deliverability is cloud-only |
 | Async invoke `api → notifier`, `jobs → notifier` | the `AsyncInvoker` port is an in-process call in `runtime/local.ts` | High — the real notifier code runs; only the invocation mechanism differs |
-| EventBridge Scheduler → `jobs` | **Tick runner**: `POST /__dev/tick {now}` and `pnpm tick --now <iso>` invoke the real `jobs` handler with a controllable `Clock` | High — the production handler runs; time travel makes reminder, digest, catch-up and DST specs deterministic |
+| EventBridge Scheduler → `jobs` | **Tick runner**: `POST /__dev/tick {now}` and `pnpm tick --now <iso>` (`apps/api/src/runtime/tick.ts`) run the real `jobs` tick (`apps/api/src/jobs/tick.ts`) at a chosen instant, with the notifier in-process | High — the production handler runs; time travel makes reminder, digest, catch-up and DST specs deterministic |
 | SSM Parameter Store / env config | `.env.local` behind the same `Config` port | n/a |
 | CDK stacks | `cdk synth` offline (no environment lookups; hosted-zone id and certificate ARN are passed as context) + assertions | High for every configuration property |
 | Lambda packaging | `cdk synth` produces the esbuild bundles; the bundle-smoke test loads each and invokes it with a sample event | Catches packaging errors before any deploy |

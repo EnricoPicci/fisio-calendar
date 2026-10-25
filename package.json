@@ -19,7 +19,7 @@
     "local:up": "docker compose -f tools/local/docker-compose.yml up -d --wait && node tools/local/src/create-table.ts local",
     "local:down": "docker compose -f tools/local/docker-compose.yml down",
     "dev": "node tools/scripts/dev.mjs",
-    "tick": "node tools/scripts/not-yet.mjs tick WP0.6",
+    "tick": "tsx apps/api/src/runtime/tick.ts",
     "seed": "tsx tools/local/seed/src/seed.ts",
     "bootstrap:therapist": "tsx tools/bootstrap/src/cli.ts",
     "deploy:dev": "pnpm test && node tools/scripts/not-yet.mjs deploy:dev WP0.10",

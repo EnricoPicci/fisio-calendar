@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { createTestEmulator } from '@fisio/auth-emulator/testing';
 import { ClientIdSchema, type ClientStatus, type TenantId, TenantIdSchema } from '@fisio/contracts';
-import { FixedClock } from '@fisio/domain';
+import { FixedClock, InProcessAsyncInvoker } from '@fisio/domain';
 import {
+  FakeChannel,
   freshTenant,
   inProcessFetch,
   TEST_CLIENT_ID,
@@ -14,15 +16,21 @@ import {
 import type { AuthDeps } from '../src/http/access';
 import { API_BASE_PATH, type AppOptions, createApp } from '../src/http/app';
 import { createTokenVerifier, type TokenVerifier } from '../src/identity/token-verifier';
-import { type ClientRecord, ClientRepository } from '../src/repo/clients';
+import { createNotifierHandler, Notifier } from '../src/notify/notifier';
+import { type ClientRecord, type ClientRecordInput, ClientRepository } from '../src/repo/clients';
+import { JobMarkerRepository } from '../src/repo/job-markers';
+import { NotificationRepository } from '../src/repo/notifications';
 import { SettingsRepository } from '../src/repo/settings';
 
 /**
  * The API spec harness (docs/architecture.md §10.1): the real app in-process (`app.request`) on
  * DynamoDB Local under a fresh tenant, at a fixed clock, with the real token verifier reading
- * the testkit issuer's JWKS from memory.
+ * the testkit issuer's JWKS from memory, the auth emulator's identity provider (a pool of its
+ * own), `FakeChannel` for email and the real notifier behind an in-process `AsyncInvoker`:
+ * `await h.invoker.settled()` waits for what an async invoke started.
  */
 export const SPEC_NOW = '2027-03-01T08:00:00.000Z';
+export const SPEC_WEB_ORIGIN = 'https://fisio.test';
 
 export interface CallOptions {
   readonly token?: string;
@@ -53,7 +61,30 @@ export function apiHarness(options: HarnessOptions = {}) {
   const tenantId: TenantId = TenantIdSchema.parse(freshTenant());
   const clients = new ClientRepository(doc, TEST_TABLE);
   const settings = new SettingsRepository(doc, TEST_TABLE);
+  const notifications = new NotificationRepository(doc, TEST_TABLE);
+  const markers = new JobMarkerRepository(doc, TEST_TABLE);
+  const channel = new FakeChannel();
   const loggedErrors: unknown[] = [];
+  /** The notifier's structured log lines, `[event, details]`. */
+  const notifierLog: [string, Readonly<Record<string, unknown>>][] = [];
+  const notifier = new Notifier({
+    notifications,
+    channels: { email: channel },
+    clock,
+    log: (event, details) => notifierLog.push([event, details]),
+  });
+  const invoker = new InProcessAsyncInvoker({
+    notifier: createNotifierHandler(notifier, (event, details) =>
+      notifierLog.push([event, details]),
+    ),
+  });
+  const { identity } = createTestEmulator({
+    doc,
+    table: TEST_TABLE,
+    clock,
+    channel,
+    config: { poolId: freshTenant(), tenantId },
+  });
   const auth: AuthDeps = {
     tokens:
       options.tokens?.({ clock, tenantId }) ??
@@ -65,7 +96,15 @@ export function apiHarness(options: HarnessOptions = {}) {
     settings,
   };
   const { app, api } = createApp(
-    { ...auth, clock, log: (error) => loggedErrors.push(error) },
+    {
+      ...auth,
+      clock,
+      log: (error) => loggedErrors.push(error),
+      identity,
+      notifications,
+      invoker,
+      webOrigin: SPEC_WEB_ORIGIN,
+    },
     options.extend ? { extend: options.extend } : {},
   );
   const fetch = inProcessFetch(app);
@@ -98,7 +137,7 @@ export function apiHarness(options: HarnessOptions = {}) {
     fields: Partial<ClientRecord> = {},
   ): Promise<ClientRecord & { token: string }> {
     const clientId = ClientIdSchema.parse(randomUUID());
-    const record: ClientRecord = {
+    const record: ClientRecordInput = {
       clientId,
       name: 'Giulia Bianchi',
       email: `${clientId}@example.test`,
@@ -108,7 +147,8 @@ export function apiHarness(options: HarnessOptions = {}) {
       ...fields,
     };
     await clients.put(tenantId, record);
-    return { ...record, token: token(clientId, 'client') };
+    const stored = (await clients.get(tenantId, clientId)) as ClientRecord;
+    return { ...stored, token: token(clientId, 'client') };
   }
 
   async function seedTherapist(): Promise<{ therapistId: string; token: string }> {
@@ -125,6 +165,13 @@ export function apiHarness(options: HarnessOptions = {}) {
     tenantId,
     clients,
     settings,
+    notifications,
+    markers,
+    channel,
+    notifier,
+    notifierLog,
+    invoker,
+    identity,
     loggedErrors,
     call,
     token,

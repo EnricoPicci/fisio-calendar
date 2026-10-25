@@ -196,6 +196,74 @@
           "role",
           "therapistId"
         ]
+      },
+      "AdminClient": {
+        "type": "object",
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "cliente@example.com"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^\\+[1-9]\\d{6,14}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "invited",
+              "enabled",
+              "blocked"
+            ]
+          },
+          "invitedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "clientId",
+          "name",
+          "email",
+          "status",
+          "createdAt"
+        ]
+      },
+      "AddClientRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "example": "cliente@example.com"
+          },
+          "phone": {
+            "type": "string",
+            "pattern": "^\\+[1-9]\\d{6,14}$"
+          }
+        },
+        "required": [
+          "name",
+          "email"
+        ],
+        "additionalProperties": false
       }
     },
     "parameters": {}
@@ -273,6 +341,101 @@
           },
           "403": {
             "description": "`forbidden`: Wrong role, not the owner, or client status is not enabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`internal_error`: Unexpected server error; the response discloses nothing about it",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/clients": {
+      "post": {
+        "summary": "Add a client and send the invitation",
+        "x-access": "therapist",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddClientRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The client, invited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminClient"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`validation_failed`: Zod rejected the request (details list the paths)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthenticated`: Missing or invalid token",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer` when no token was sent; `Bearer error=\"invalid_token\"` when one was sent and refused (RFC 6750 §3)",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "Bearer",
+                    "Bearer error=\"invalid_token\""
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: Wrong role, not the owner, or client status is not enabled",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`client_exists`: A client with this email exists",
             "content": {
               "application/problem+json": {
                 "schema": {
