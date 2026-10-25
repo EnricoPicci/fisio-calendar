@@ -6,6 +6,9 @@
  * Keys are generic strings: every item has `PK`/`SK`, and the entities listed in §6.2 fill the
  * index attributes `GSI1PK`/`GSI1SK` (a client's bookings) and `GSI2PK`/`GSI2SK` (clients by
  * email). Key values are built only in `apps/api/src/repo`.
+ *
+ * Keep this module free of imports (no aws-cdk-lib): the testkit and tools/local load it at
+ * runtime, and the CDK stack is the one that adapts it.
  */
 export interface IndexDefinition {
   readonly name: string;

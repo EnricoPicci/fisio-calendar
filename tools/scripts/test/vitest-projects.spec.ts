@@ -1,11 +1,19 @@
-import { globSync } from 'node:fs';
+import { globSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { configDefaults } from 'vitest/config';
 import { repoPath } from './run-node';
 
 interface Config {
-  default: { test?: { projects?: string[]; include?: string[]; exclude?: string[] } };
+  default: {
+    test?: {
+      projects?: string[];
+      include?: string[];
+      exclude?: string[];
+      globalSetup?: string | string[];
+    };
+  };
 }
 
 const root = repoPath('');
@@ -45,5 +53,34 @@ describe('Vitest projects: every spec file runs in `pnpm test`', () => {
     });
     expect(all.length).toBeGreaterThan(0);
     expect(all.filter((file) => !inProjects.has(file))).toEqual([]);
+  });
+
+  // Value: protects=a project whose specs use DynamoDB Local creates the test table itself, so `vitest --project <name>` works alone; fails_when=a new project uses the testkit DynamoDB client without listing the testkit global setup; why_new=a full run hides it (testkit's setup creates the shared table); seam=none; no_claim=that the setup succeeds
+  it('each project whose specs use DynamoDB Local lists the testkit global setup', async () => {
+    const rootConfig = (await import(repoPath('vitest.config.ts'))) as Config;
+    const configs = (rootConfig.default.test?.projects ?? []).flatMap((pattern) =>
+      globSync(pattern, { cwd: root }),
+    );
+    // This file names the helpers in the pattern below, so it does not count as a user.
+    const thisFile = fileURLToPath(import.meta.url);
+    const usesDynamo = /\b(testDocumentClient|localDynamoClient|ensureTable|TEST_TABLE)\b/;
+    const testkitSetup = ['src/global-setup.ts', '@fisio/testkit/global-setup'];
+    const missing: string[] = [];
+    let checked = 0;
+    for (const config of configs) {
+      const { default: project } = (await import(join(root, config))) as Config;
+      const dir = join(root, dirname(config));
+      const specs = globSync(['**/*.spec.{ts,tsx}', 'test/**/*.ts'], {
+        cwd: dir,
+        exclude: (p) => p.split('/').some((part) => skipped.has(part)),
+      });
+      const sources = specs.map((file) => join(dir, file)).filter((path) => path !== thisFile);
+      if (!sources.some((path) => usesDynamo.test(readFileSync(path, 'utf8')))) continue;
+      checked += 1;
+      const setup = [project.test?.globalSetup ?? []].flat();
+      if (!setup.some((entry) => testkitSetup.includes(entry))) missing.push(config);
+    }
+    expect(checked).toBeGreaterThan(0);
+    expect(missing).toEqual([]);
   });
 });

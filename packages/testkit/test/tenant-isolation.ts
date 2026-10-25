@@ -12,7 +12,7 @@ export function tenantIsolationSpec(file: string): void {
   const db = testDocumentClient();
   afterAll(() => db.destroy());
 
-  it('two spec files with different tenants do not see each other’s items', async () => {
+  it("two spec files with different tenants do not see each other's items", async () => {
     const sortKeys = ['ITEM#1', 'ITEM#2', 'ITEM#3'];
     for (const SK of sortKeys) {
       await db.send(new PutCommand({ TableName: TEST_TABLE, Item: { PK: `T#${tid}`, SK, file } }));

@@ -1,4 +1,4 @@
-import { DescribeTableCommand } from '@aws-sdk/client-dynamodb';
+import { DescribeTableCommand, DescribeTimeToLiveCommand } from '@aws-sdk/client-dynamodb';
 import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { TABLE_DEFINITION } from '@fisio/infra/table-definition';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -20,7 +20,7 @@ describe('Local DynamoDB: the shared table on DynamoDB Local', () => {
   });
 
   // Value: protects=a tenant-prefixed query never returns another tenant's items, deterministically in one file; fails_when=freshTenant repeats ids or tenants share a partition; why_new=the two-file spec depends on worker timing; seam=none; no_claim=isolation of keys the repo builds (WP0.4+)
-  it('a fresh tenant sees none of another tenant’s items', async () => {
+  it("a fresh tenant sees none of another tenant's items", async () => {
     const [first, second] = [freshTenant(), freshTenant()];
     expect(first).not.toBe(second);
     for (const owner of [first, second]) {
@@ -38,15 +38,34 @@ describe('Local DynamoDB: the shared table on DynamoDB Local', () => {
     expect(Items?.map((item) => item.owner)).toEqual([first]);
   });
 
-  // Value: protects=the test table has the keys, indexes and TTL of the shared definition; fails_when=create-table drifts from infra/lib/table-definition.ts (a missing GSI or TTL); why_new=the round trip uses only the primary key; seam=none; no_claim=the CDK stack (WP0.9 asserts it)
+  // Value: protects=the test table has the keys, index key schemas, projections and TTL of the shared definition; fails_when=create-table drifts from infra/lib/table-definition.ts (a swapped or missing index key, a projection other than ALL, TTL off); why_new=the round trip uses only the primary key; seam=none; no_claim=the CDK stack (WP0.9 asserts it)
   it('the test table is built from the shared table definition', async () => {
     const { Table } = await db.send(new DescribeTableCommand({ TableName: TEST_TABLE }));
-    expect(Table?.KeySchema).toEqual([
-      { AttributeName: TABLE_DEFINITION.partitionKey, KeyType: 'HASH' },
-      { AttributeName: TABLE_DEFINITION.sortKey, KeyType: 'RANGE' },
-    ]);
-    expect(Table?.GlobalSecondaryIndexes?.map((index) => index.IndexName).sort()).toEqual(
-      TABLE_DEFINITION.globalSecondaryIndexes.map((index) => index.name).sort(),
+    const keys = (partitionKey: string, sortKey: string) => [
+      { AttributeName: partitionKey, KeyType: 'HASH' },
+      { AttributeName: sortKey, KeyType: 'RANGE' },
+    ];
+    expect(Table?.KeySchema).toEqual(keys(TABLE_DEFINITION.partitionKey, TABLE_DEFINITION.sortKey));
+    const indexes = (Table?.GlobalSecondaryIndexes ?? [])
+      .map((index) => ({
+        name: index.IndexName,
+        keys: index.KeySchema,
+        projection: index.Projection?.ProjectionType,
+      }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    expect(indexes).toEqual(
+      TABLE_DEFINITION.globalSecondaryIndexes.map((index) => ({
+        name: index.name,
+        keys: keys(index.partitionKey, index.sortKey),
+        projection: 'ALL',
+      })),
     );
+    const { TimeToLiveDescription } = await db.send(
+      new DescribeTimeToLiveCommand({ TableName: TEST_TABLE }),
+    );
+    expect(TimeToLiveDescription).toMatchObject({
+      AttributeName: TABLE_DEFINITION.timeToLiveAttribute,
+      TimeToLiveStatus: 'ENABLED',
+    });
   });
 });

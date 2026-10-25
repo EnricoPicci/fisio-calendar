@@ -5,7 +5,8 @@ name: fisio-local
 
 services:
   dynamodb:
-    image: amazon/dynamodb-local:3.3.1
+    # Pinned by digest as well as tag (Dependabot's docker-compose updates bump both).
+    image: amazon/dynamodb-local:3.3.1@sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab
     # -sharedDb: one database for every access key and region, so the API, the tools and the
     # specs see the same tables. -inMemory: nothing survives `local:down`; `pnpm seed` rebuilds.
     command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
@@ -19,7 +20,7 @@ services:
       retries: 30
 
   mailpit:
-    image: axllent/mailpit:v1.31.4
+    image: axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48
     ports:
       - "127.0.0.1:1025:1025" # SMTP, used by SmtpEmailChannel (WP0.6)
       - "127.0.0.1:8025:8025" # web UI and REST API
