@@ -802,6 +802,44 @@
 **Priority:** P3
 **Depends on:** None.
 
+### A sign-out racing a forced refresh leaves the device signed in at Cognito
+
+**What:** Make `SessionViewModel.signOut()` wait for a pending shared refresh to settle (result ignored, bounded once the bounded-wait entry lands) before calling `auth.signOut()`, or serialise the two inside `AmplifyAuthService`; spec the cell (refresh in flight, `signOut()`, the refresh lands: `restore()` on the next load finds nobody).
+
+**Why:** Amplify's token orchestrator stores the refreshed pair after its round trip with no check that the store was cleared meanwhile, and `signOut()` revokes the refresh token it loaded before the race. A user who taps "Esci" while a forced refresh is in flight sees the sign-in page, but the next page load restores a live pair; with refresh-token rotation on, the newly issued refresh token was never revoked. `LocalAuthService` guards this with its `#signedOut` flag; the Amplify path has no counterpart. Unverifiable before the `dev` pool exists.
+
+**Context:** Adversarial finding of the fourth WP0.7 ship-review pass. Related: "No bounded wait on sign-in, setup and API round trips" (a hung refresh must not hang the sign-out).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (pool), WP0.10 (spike).
+
+### The setup link evicts a live session at Cognito without ending it in the app
+
+**What:** Decide what `/setup` does while `page$` names a role: end the session through `SessionViewModel` with a reason before starting the setup, or refuse the page until the user signs out. Spec the choice.
+
+**Why:** `App.tsx` serves `/setup` whatever `page$` says, so `startSetup()` is the one sign-in call that can run with a live session; on Cognito `freshSignIn` answers `UserAlreadyAuthenticatedException` by signing out and retrying, so a signed-in therapist who reopens a used setup link has her refresh token revoked and Amplify's store cleared, keeps working on the in-memory tokens, and is ended with `refresh_refused` at the next refresh with no explanation. A client signed in on a shared device meets the same fate when the therapist uses it for setup. `LocalAuthService.startSetup()` never touches storage, so the suite cannot show it.
+
+**Context:** Adversarial finding of the fourth WP0.7 ship-review pass.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** WP0.9 (pool).
+
+### Form ergonomics the pages of M1 should settle
+
+**What:** When `step$` swaps a form (email → code, password → TOTP, setup password → TOTP), focus the first input of the new form (`autoFocus` is a binding attribute); give `INPUT` a background (`bg-white`) so a field reads as a well against the `stone-50` page; give the TOTP secret chip a visible edge (`bg-stone-100` on `stone-50` is a 1.03:1 contrast) and wider tracking; offer a show/hide toggle on the password fields, at least on the setup page, where a typo locks the therapist into a password she does not know (`revealPassword$` on the view-model keeps the template logic-free). Also: a spec row for the setup page's `disabled={busy}` submit buttons, a spec row for `invalid_session` as an ending refresh refusal (the `ENDING_REFUSALS` set has two members and one row), the local spent marker written only for `not_authorized` (today any `AuthError` on `/refresh` writes it, latent while the emulator refuses only with that code), a generation guard in `signOut()` so a late provider answer cannot end a session started meanwhile, and the stale landing of a non-ending refresh failure specced. `LOCAL_AUTH_ISSUER` should be tied to the emulator's default issuer by a spec (`DEFAULT_EMULATOR_CONFIG.issuer` from `@fisio/auth-emulator`), see "Local stack constants are repeated across packages"; the password length and the OTP figures in the Italian strings belong with `MIN_PASSWORD_LENGTH`, see "Sign-in policy figures live in the strings".
+
+Red-team items of the same pass: an error boundary around `<App/>` (or `onUncaughtError` on `createRoot`) rendering the same unexpected-error page and retry as the boot failure, since a render-time throw today leaves a blank page; `maxLength` and `pattern` on the three code inputs, or the emulator's `validation_failed` and Cognito's `InvalidParameterException` mapped to `code_mismatch` on the answer routes; the `src/pages` fence inverted to an allowlist of React imports (class components, `createContext`, `useId`, `startTransition` and future hooks pass the denylist) with `react-dom` and the logic-bearing react-router hooks restricted; the pre-gate lanes of the two home templates pointed at `HomePages.spec.tsx` and `main.tsx` at a future boot spec instead of `[]`; the refused-address short-circuit in `AmplifyAuthService.confirmCode()` (no network request, instant answer) is observable in the Network tab where the emulator answers with a real round trip, so keep the round-trip shape identical across the two services; and a therapist token obtained through the client code flow (`EMAIL_OTP`, before the WP0.9 trigger refuses it) passes the TOTP-enabled guard without TOTP having been used, so refuse a therapist role from `confirmCode()` as defence in depth (see also "The password-only therapist refusal lives only in the Amplify service").
+
+**Why:** Design, testing, state-machines, maintainability, red-team and adversarial findings of the fourth WP0.7 ship-review pass, all informational; recorded here instead of a further fixing cycle so the branch could converge.
+
+**Context:** Fourth WP0.7 ship-review pass (2026-10-25). The offline-restore entry above also applies to every offline start for the therapist: `#enrolledOnly` calls `fetchMFAPreference()` on `restore()` even with a valid cached access token.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
 ## Infrastructure
 
 ### Outbox dedup and the tick only see recent months
