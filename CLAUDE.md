@@ -12,9 +12,9 @@ locally. The design is `docs/architecture.md`; the work breakdown is `docs/imple
 | Command | What it does |
 |---|---|
 | `pnpm install` | pnpm 12 via `corepack enable` (version pinned in `package.json`); develop on Node 24 (`.nvmrc`). The Lambdas run Node 22 (architecture §4.3), so code must run on 22 too: `engines.node` stays `>=22.12` on purpose |
-| `pnpm local:up` / `local:down` | Docker: DynamoDB Local (:8000), Mailpit (UI `http://localhost:8025`) / stop them |
+| `pnpm local:up` / `local:down` | Docker: DynamoDB Local (:8000), Mailpit (UI `http://localhost:8025`), then the `fisio-local` table (Node >= 22.18) / stop them (in-memory: data is dropped) |
 | `pnpm dev` | api, auth emulator, web on the local stack |
-| `pnpm test` | **the complete local suite — the only definition of "green"** (domain, API, view-models, headless journeys, templates, infra assertions, bundle smoke, Playwright binding) |
+| `pnpm test` | **the complete local suite — the only definition of "green"** (domain, API, view-models, headless journeys, templates, infra assertions, bundle smoke, Playwright binding); needs `pnpm local:up` running |
 | `pnpm typecheck` / `pnpm lint` / `pnpm lint:fix` | `tsc --noEmit` per package / Biome check / Biome fix |
 | `pnpm tick --now <iso>` | run the scheduler (`jobs` handler) at a chosen instant |
 | `pnpm seed` | therapist (via bootstrap) + clients + rules + slots on the local stack |
