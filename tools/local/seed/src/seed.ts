@@ -152,7 +152,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`Therapist: ${report.therapist.email}`);
     console.log(
       credentials
-        ? `  password ${credentials.password}\n  TOTP secret ${credentials.totpSecret}\n  ${credentials.otpauthUri}`
+        ? `  password ${credentials.password}\n  TOTP secret ${credentials.totpSecret}\n  ${credentials.otpauthUri}\n  (the enrolment used the current code: sign in with the next one, up to 30 s from now)`
         : '  already set up (the secret was printed by the first seed; `pnpm local:down && pnpm local:up` resets it)',
     );
     console.log(`Clients (sign in with the one-time code printed by the auth emulator):`);

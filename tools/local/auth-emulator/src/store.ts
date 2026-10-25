@@ -302,17 +302,25 @@ export class EmulatorStore {
     throw new Error('The failed-attempt counter stayed contended');
   }
 
-  /** Locks the email until `lockedUntil`; the count restarts after it. */
+  /**
+   * Locks the email until `lockedUntil`; the count restarts after it. A count that a concurrent
+   * successful sign-in has just cleared stays cleared.
+   */
   async lockAttempts(email: string, lockedUntil: string): Promise<void> {
-    await this.doc.send(
-      new UpdateCommand({
-        TableName: this.table,
-        Key: { PK: this.#pk, SK: attemptsSk(email) },
-        UpdateExpression: 'SET lockedUntil = :until, resetAt = :until, #ttl = :ttl',
-        ExpressionAttributeNames: { '#ttl': 'ttl' },
-        ExpressionAttributeValues: { ':until': lockedUntil, ':ttl': epochSeconds(lockedUntil) },
-      }),
-    );
+    try {
+      await this.doc.send(
+        new UpdateCommand({
+          TableName: this.table,
+          Key: { PK: this.#pk, SK: attemptsSk(email) },
+          UpdateExpression: 'SET lockedUntil = :until, resetAt = :until, #ttl = :ttl',
+          ConditionExpression: 'attribute_exists(PK)',
+          ExpressionAttributeNames: { '#ttl': 'ttl' },
+          ExpressionAttributeValues: { ':until': lockedUntil, ':ttl': epochSeconds(lockedUntil) },
+        }),
+      );
+    } catch (error) {
+      if (!isConditionFailure(error)) throw error;
+    }
   }
 
   async clearAttempts(email: string): Promise<void> {
