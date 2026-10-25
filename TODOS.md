@@ -550,6 +550,72 @@
 **Priority:** P2
 **Depends on:** WP0.9 (pool), WP0.10 (spike).
 
+### The SPA does not react to a 401 and trusts the device clock for token freshness
+
+**What:** When the API answers `401 unauthenticated` with `WWW-Authenticate: Bearer error="invalid_token"` (architecture §8.2), force one refresh and retry the request once, then end the session; when it answers `403 forbidden` for a blocked client, end the session with an explanation (J7). Also decide what a device clock far from the server's does: a clock behind sends dead tokens until the skew is passed (every request 401s, no refresh), a clock ahead by more than the token lifetime refreshes on every request.
+
+**Why:** `SessionViewModel` refreshes only by comparing `exp` with the `Clock`; `OpenApiClient` surfaces 401/403 as an `error$` message and nothing else, so a blocked client or a global sign-out keeps the home page until the token nears expiry.
+
+**Context:** Adversarial finding of the WP0.7 review. J7 (WP0.8) owns the block explanation; the 401 retry fits the `ApiClient` (`#call`) and the session (`accessToken$`).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.8 (J7).
+
+### No bounded wait on sign-in, setup and API round trips
+
+**What:** Give `FormViewModel.attempt()` and the session's shared refresh a bounded wait (`timeout()` in RxJS, or `AbortSignal.timeout` in `fetchOrNetworkError`) that fails as a `NetworkError`, so a stalled mobile connection shows the offline message and a retry instead of a form that stays busy (its links are no-ops while busy) or a refresh that blocks every later request.
+
+**Why:** Browser `fetch` and Amplify calls have no timeout; the WP0.7 review made forms ignore link clicks while busy, which turns a hung request into a page with no way out but a reload.
+
+**Context:** Red-team finding of the WP0.7 review. The emulator spec harness can simulate a never-answering fetch.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** None.
+
+### Server-side control for a therapist session without TOTP
+
+**What:** Refuse therapist access tokens whose user has no TOTP enrolled, in the pre-token-generation trigger (WP0.9) or in the API's per-request check (`UserMFASettingList` through the Cognito adapter), so the SPA's `AmplifyAuthService` guard (`enrolledOnly`: sign out a therapist session whose `fetchMFAPreference` lacks TOTP) is defence in depth and not the only control.
+
+**Why:** With MFA optional (§8.1), Cognito completes the setup link's password step before the enrolment and Amplify keeps those tokens; a therapist who stops after the password has a single-factor session until the SPA notices (§15).
+
+**Context:** Security finding of the WP0.7 review; the SPA side landed in WP0.7 with a mocked-SDK spec.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP0.9 (triggers), WP0.10 (verify on `dev`).
+
+### Sign-in policy figures live in the strings
+
+**What:** Put the policy figures the UI sentences quote (8-digit code, 5 minutes, 15-minute lockout, 12-character password) in one place in `@fisio/contracts` (next to `MIN_PASSWORD_LENGTH`) and build `strings.auth.codeSent`, `too_many_attempts`, `invalid_password` and `setup.passwordLabel` from it; have the emulator config and, later, the Cognito pool read the same constants.
+
+**Why:** A policy change leaves the Italian text silently wrong.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### Local stack constants are repeated across packages
+
+**What:** The emulator issuer (`LOCAL_AUTH_ISSUER` in the SPA, `AUTH_ISSUER` in the API's local defaults, `DEFAULT_EMULATOR_CONFIG.issuer`), the web origin/port and the API port (`vite.config.ts`, `LOCAL_WEB_ORIGINS`), `/api/v1` (`API_BASE_PATH`, `API_BASE_URL`) and the TOTP issuer label (`'Fisio Calendar'` in the Amplify service and the emulator) are literals in two or three places. Expose a dependency-free constants module (`@fisio/contracts`, or an `@fisio/auth-emulator/constants` subpath the browser bundle can import) or add specs asserting they agree.
+
+**Why:** Nothing checks they agree; the browser bundle cannot import the emulator package.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** None.
+
+### The web app renders at browser typography defaults
+
+**What:** Pick a typeface and the accent/selection/focus colours (`@theme` in `styles.css`) once the pages of M1 exist; WP0.7 left `system-ui` and the Tailwind defaults on purpose.
+
+**Why:** Design review note (WP0.7): a skeleton that stays the de facto theme.
+
+**Effort:** S
+**Priority:** P4
+**Depends on:** M1 pages.
+
 ### The sign-in page does not say why a session ended
 
 **What:** Show a notice on the sign-in page when `SessionViewModel.signedOut$` emitted `refresh_refused` (the device was signed out: blocked, global sign-out, refresh token expired), and later the explanation J7 expects after a block. `signedOut$` is a hot stream, so the notice needs a replayed "last reason" the sign-in view-model can read.

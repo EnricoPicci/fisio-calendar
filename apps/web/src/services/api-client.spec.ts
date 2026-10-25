@@ -2,6 +2,7 @@ import { PROBLEM_MEDIA_TYPE } from '@fisio/contracts';
 import { firstValueFrom, of, Subject } from 'rxjs';
 import { describe, expect, it } from 'vitest';
 import { ApiError, AUTHORIZATION_HEADER, CONTENT_SHA256_HEADER, OpenApiClient } from './api-client';
+import { NetworkError } from './network-error';
 
 const BASE_URL = 'http://api.test/api/v1';
 const clientProfile = {
@@ -68,11 +69,12 @@ describe('ApiClient: typed requests with the bearer token and the OAC body hash 
     expect(request?.headers.get(CONTENT_SHA256_HEADER)).toBe(await sha256Hex(body ?? ''));
   });
 
-  it('nobody signed in: the request goes without Authorization', async () => {
+  it('nobody signed in: the call fails as unauthenticated at once, nothing is sent', async () => {
     const { fetch, requests } = fakeFetch(() => json(200, clientProfile));
     const client = new OpenApiClient({ fetch, baseUrl: BASE_URL, accessToken$: of(null) });
-    await firstValueFrom(client.me());
-    expect(requests[0]?.headers.has(AUTHORIZATION_HEADER)).toBe(false);
+    const failure = await firstValueFrom(client.me()).catch((e: unknown) => e);
+    expect(failure).toMatchObject({ name: 'ApiError', code: 'unauthenticated', status: 401 });
+    expect(requests).toHaveLength(0);
   });
 
   it('nothing is sent until accessToken$ has answered (a silent refresh comes first)', async () => {
@@ -121,11 +123,13 @@ describe('ApiClient: typed requests with the bearer token and the OAC body hash 
     await expect(firstValueFrom(client.me())).rejects.toThrow();
   });
 
-  it('a network failure surfaces as the TypeError fetch throws', async () => {
+  it('a request that never reaches the server surfaces as a NetworkError', async () => {
     const fetch: typeof globalThis.fetch = async () => {
       throw new TypeError('Failed to fetch');
     };
     const client = new OpenApiClient({ fetch, baseUrl: BASE_URL, accessToken$: of('tok') });
-    await expect(firstValueFrom(client.me())).rejects.toBeInstanceOf(TypeError);
+    const failure = await firstValueFrom(client.me()).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(NetworkError);
+    expect((failure as NetworkError).cause).toBeInstanceOf(TypeError);
   });
 });

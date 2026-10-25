@@ -4,8 +4,10 @@ import { useDeps } from '../app/deps';
 export function LoadingPage() {
   const { strings } = useDeps();
   return (
-    <main className="mx-auto max-w-sm p-6">
-      <p className="text-stone-500">{strings.common.loading}</p>
+    <main className="mx-auto max-w-lg p-6" aria-busy="true">
+      <p role="status" className="text-stone-500">
+        {strings.common.loading}
+      </p>
     </main>
   );
 }

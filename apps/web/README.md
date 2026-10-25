@@ -25,7 +25,10 @@ test/support/    fakes for specs (AuthService, ApiClient, JWTs); test/journeys a
   `this.stream(name, source$)` and methods returning `Promise<void>` or `void`; `dispose()`
   completes every stream. `FormViewModel` adds `busy$`/`error$` and `attempt()` for one request
   at a time. Everything shown is a stream value or a `Strings` label; `error$` is Italian text
-  mapped from `ErrorCode`/`AuthErrorCode` (`viewmodels/errors.ts`).
+  mapped from `ErrorCode`/`AuthErrorCode` (`viewmodels/errors.ts`); a `NetworkError` (the
+  request never reached the server) reads as offline, anything else as unexpected.
+- **Templates share one set of class strings** (`src/app/classes.ts`) and read passwords with
+  `fields.raw()` (never trimmed), identifiers and codes with `fields.get()`.
 - **Ports return Observables** (`ApiClient`, `AuthService`), so view-model specs are marble
   specs on `TestScheduler` and the headless journeys drive the real classes.
 - **Session.** `SessionViewModel.accessToken$` is what the `ApiClient` subscribes to before each

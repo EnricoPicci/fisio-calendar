@@ -1,11 +1,11 @@
 import type { Strings } from '@fisio/contracts';
 import type { ReactElement } from 'react';
 import { Navigate, useLocation } from 'react-router';
+import { ALERT, BUTTON, FIELD, FORM, INPUT, LINK } from '../app/classes';
 import { useDeps, useViewModel } from '../app/deps';
 import { onSubmit } from '../app/forms';
 import { useObservable } from '../app/use-observable';
-import type { TotpEnrolment } from '../services/auth-service';
-import { type SetupStep, SetupViewModel } from '../viewmodels/SetupViewModel';
+import { type SetupEnrolment, type SetupStep, SetupViewModel } from '../viewmodels/SetupViewModel';
 
 /**
  * The therapist's setup page (docs/architecture.md §11.5), opened by the bootstrap link
@@ -25,7 +25,7 @@ export function SetupPage() {
       <h1 className="text-2xl font-semibold">{strings.setup.title}</h1>
       <Step vm={vm} busy={busy} strings={strings} link={hash} enrolment={enrolment} />
       {error ? (
-        <p role="alert" className="mt-4 text-red-700">
+        <p role="alert" className={ALERT}>
           {error}
         </p>
       ) : null}
@@ -38,7 +38,7 @@ interface StepProps {
   readonly busy: boolean;
   readonly strings: Strings;
   readonly link: string;
-  readonly enrolment: TotpEnrolment | null;
+  readonly enrolment: SetupEnrolment | null;
 }
 
 const STEPS: Record<SetupStep, (props: StepProps) => ReactElement> = {
@@ -47,15 +47,9 @@ const STEPS: Record<SetupStep, (props: StepProps) => ReactElement> = {
   done: Done,
 };
 
-const FORM = 'mt-6 flex flex-col gap-4';
-const FIELD = 'flex flex-col gap-1';
-const INPUT = 'rounded-md border border-stone-300 px-3 py-3 text-lg';
-const BUTTON =
-  'rounded-md bg-teal-700 px-4 py-3 text-lg font-medium text-white disabled:opacity-50';
-
 function PasswordStep({ vm, busy, strings, link }: StepProps) {
   return (
-    <form className={FORM} onSubmit={onSubmit((f) => vm.startSetup(link, f.get('password')))}>
+    <form className={FORM} onSubmit={onSubmit((f) => vm.startSetup(link, f.raw('password')))}>
       <p>{strings.setup.intro}</p>
       <label className={FIELD}>
         <span>{strings.setup.passwordLabel}</span>
@@ -82,9 +76,11 @@ function TotpStep({ vm, busy, strings, enrolment }: StepProps) {
         <span>{strings.setup.secretLabel}</span>
         <code className="break-all rounded-md bg-stone-100 p-3 text-base">{enrolment?.secret}</code>
       </p>
-      <a href={enrolment?.otpauthUri} className="text-teal-800 underline">
-        {strings.setup.openAuthenticator}
-      </a>
+      {enrolment?.otpauthUri ? (
+        <a href={enrolment.otpauthUri} className={LINK}>
+          {strings.setup.openAuthenticator}
+        </a>
+      ) : null}
       <label className={FIELD}>
         <span>{strings.setup.totpLabel}</span>
         <input

@@ -12,14 +12,18 @@ export interface TokenClaims {
   readonly email?: string;
 }
 
-/** The payload of `token`; `{}` for anything that is not a JWT with a JSON payload. */
-export function decodeJwtClaims(token: string): TokenClaims {
+/** The payload of `token`; `{}` for anything that is not a JWT with a JSON object payload. */
+export function decodeJwtClaims(token: unknown): TokenClaims {
+  if (typeof token !== 'string') return {};
   const payload = token.split('.')[1];
   if (!payload) return {};
   try {
-    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
-    const claims: unknown = JSON.parse(json);
-    return claims && typeof claims === 'object' ? (claims as TokenClaims) : {};
+    const binary = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const claims: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    return claims && typeof claims === 'object' && !Array.isArray(claims)
+      ? (claims as TokenClaims)
+      : {};
   } catch {
     return {};
   }

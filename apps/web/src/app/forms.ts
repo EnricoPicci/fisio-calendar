@@ -21,9 +21,14 @@ export class Fields {
     this.#data = data;
   }
 
-  /** The trimmed value of the field, '' when absent. */
+  /** The trimmed value of an identifier or code field, '' when absent. */
   get(name: string): string {
+    return this.raw(name).trim();
+  }
+
+  /** The value as typed: for passwords, where a space is part of the secret. */
+  raw(name: string): string {
     const value = this.#data.get(name);
-    return typeof value === 'string' ? value.trim() : '';
+    return typeof value === 'string' ? value : '';
   }
 }

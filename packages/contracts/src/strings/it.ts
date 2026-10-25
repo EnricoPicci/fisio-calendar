@@ -57,6 +57,10 @@ export interface Strings {
     readonly totpLabel: string;
     readonly finish: string;
     readonly invalidLink: string;
+    /** The link was already used, replaced by a newer one, or has expired. */
+    readonly linkUsed: string;
+    /** The enrolment session ended (expired, or a bootstrap re-run): start again from the link. */
+    readonly enrolmentEnded: string;
   };
   readonly home: {
     readonly greeting: string;
@@ -146,6 +150,9 @@ export const strings: Strings = {
     totpLabel: 'Codice dell’app di autenticazione',
     finish: 'Completa',
     invalidLink: 'Questo link non è valido. Chiedi un nuovo link di configurazione.',
+    linkUsed: 'Questo link è già stato usato o è scaduto. Chiedi un nuovo link di configurazione.',
+    enrolmentEnded:
+      'La configurazione è scaduta o è stata sostituita. Ricomincia da questo link, oppure chiedine uno nuovo.',
   },
   home: {
     greeting: 'Ciao',

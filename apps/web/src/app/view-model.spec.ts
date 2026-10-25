@@ -17,6 +17,10 @@ class Sample extends ViewModel {
   }
 }
 
+function observer(): StreamObserver {
+  return { subscribed: vi.fn(), emitted: vi.fn(), unsubscribed: vi.fn() };
+}
+
 describe('ViewModel base (architecture §7.1, view-model contract)', () => {
   it('stream() tags the observable with its owner and name, and lists it', () => {
     const vm = new Sample();
@@ -32,23 +36,27 @@ describe('ViewModel base (architecture §7.1, view-model contract)', () => {
 
   it('an observer records subscribe, every emission and unsubscribe of each stream', () => {
     const vm = new Sample();
-    const observer: StreamObserver = {
-      subscribed: vi.fn(),
-      emitted: vi.fn(),
-      unsubscribed: vi.fn(),
-    };
-    const detach = vm.observe(observer);
+    const recorder = observer();
+    const detach = vm.observe(recorder);
     const subscription = vm.ticks$.subscribe();
     vm.ticks.next(1);
     vm.ticks.next(2);
     subscription.unsubscribe();
-    expect(observer.subscribed).toHaveBeenCalledWith(vm, 'ticks$');
-    expect(observer.emitted).toHaveBeenNthCalledWith(1, vm, 'ticks$', 1);
-    expect(observer.emitted).toHaveBeenNthCalledWith(2, vm, 'ticks$', 2);
-    expect(observer.unsubscribed).toHaveBeenCalledWith(vm, 'ticks$');
+    expect(recorder.subscribed).toHaveBeenCalledWith(vm, 'ticks$');
+    expect(recorder.emitted).toHaveBeenNthCalledWith(1, vm, 'ticks$', 1);
+    expect(recorder.emitted).toHaveBeenNthCalledWith(2, vm, 'ticks$', 2);
+    expect(recorder.unsubscribed).toHaveBeenCalledWith(vm, 'ticks$');
     detach();
     vm.ticks$.subscribe().unsubscribe();
-    expect(observer.subscribed).toHaveBeenCalledTimes(1);
+    expect(recorder.subscribed).toHaveBeenCalledTimes(1);
+  });
+
+  it('a source error reaches the subscriber of the tagged stream', () => {
+    const vm = new Sample();
+    const error = vi.fn();
+    vm.ticks$.subscribe({ error });
+    vm.ticks.error(new Error('boom'));
+    expect(error).toHaveBeenCalledTimes(1);
   });
 
   it('dispose() completes every stream and runs every owned teardown, once', () => {
@@ -64,6 +72,18 @@ describe('ViewModel base (architecture §7.1, view-model contract)', () => {
     expect(teardown).toHaveBeenCalledTimes(1);
     expect(vm.isDisposed()).toBe(true);
     expect(vm.count.isStopped).toBe(true);
+  });
+
+  it('dispose() with a live subscription tears down the source and notifies unsubscribed', () => {
+    const vm = new Sample();
+    const recorder = observer();
+    vm.observe(recorder);
+    vm.ticks$.subscribe();
+    expect(vm.ticks.observed).toBe(true);
+    vm.dispose();
+    expect(vm.ticks.observed).toBe(false);
+    expect(recorder.unsubscribed).toHaveBeenCalledWith(vm, 'ticks$');
+    expect(recorder.unsubscribed).toHaveBeenCalledTimes(1);
   });
 
   it('a stream subscribed after dispose() completes at once; a teardown owned after runs at once', () => {

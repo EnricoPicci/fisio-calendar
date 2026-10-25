@@ -10,8 +10,11 @@ import type { SessionSink } from './SessionViewModel';
  * - `email` → `requestCode(email)` → `code` → `confirmCode(code)` → session started.
  * - `password` → `signInWithPassword(email, password)` → `totp` → `confirmTotp(code)` → session.
  *
- * A wrong code stays on its step; an expired code or a lockout goes back to the first step of
- * the flow, since the code can no longer be used; `error$` says why in Italian.
+ * A wrong code stays on its step; any other refusal (expired code, lockout, a session the
+ * provider no longer knows, an unusable account) goes back to the first step of the flow, since
+ * the step can no longer succeed; `error$` says why in Italian. A failure that is not a refusal
+ * (offline, unexpected) keeps the step for a retry. The form links do nothing while a request is
+ * in flight, so a settling request never lands on a form it does not belong to.
  */
 export type SignInStep = 'email' | 'code' | 'password' | 'totp';
 
@@ -41,6 +44,7 @@ export class SignInViewModel extends FormViewModel {
       (tokens) => this.#session.start(tokens),
       (refused) => {
         if (refused !== 'code_mismatch') this.#step.next('email');
+        return undefined;
       },
     );
   }
@@ -61,6 +65,7 @@ export class SignInViewModel extends FormViewModel {
       (tokens) => this.#session.start(tokens),
       (refused) => {
         if (refused !== 'code_mismatch') this.#step.next('password');
+        return undefined;
       },
     );
   }
@@ -76,6 +81,7 @@ export class SignInViewModel extends FormViewModel {
   }
 
   #goTo(step: SignInStep): void {
+    if (this.busy.value) return;
     this.error.next(null);
     this.#step.next(step);
   }

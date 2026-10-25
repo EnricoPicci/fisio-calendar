@@ -1,3 +1,4 @@
+import { ALERT, LINK } from '../app/classes';
 import { useDeps, useViewModel } from '../app/deps';
 import { useObservable } from '../app/use-observable';
 import { HomeViewModel } from '../viewmodels/HomeViewModel';
@@ -15,12 +16,12 @@ export function TherapistHomePage() {
     <main className="mx-auto max-w-lg p-6">
       <header className="flex items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">{welcome}</h1>
-        <button type="button" className="text-teal-800 underline" onClick={() => session.signOut()}>
+        <button type="button" className={LINK} onClick={() => session.signOut()}>
           {strings.common.signOut}
         </button>
       </header>
       {error ? (
-        <p role="alert" className="mt-4 text-red-700">
+        <p role="alert" className={ALERT}>
           {error}
         </p>
       ) : null}

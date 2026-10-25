@@ -50,7 +50,7 @@ describe('Sign-in page binding (architecture §7.1 templates, §10.1)', () => {
     auth.requestCode.mockReturnValue(of(undefined));
     renderPage(auth);
 
-    submit(screen.getByLabelText(strings.auth.emailLabel), 'anna@example.it');
+    submit(screen.getByLabelText(strings.auth.emailLabel), ' anna@example.it ');
 
     expect(auth.requestCode).toHaveBeenCalledWith('anna@example.it');
     expect(await screen.findByLabelText(strings.auth.codeLabel)).toBeTruthy();
@@ -99,7 +99,19 @@ describe('Sign-in page binding (architecture §7.1 templates, §10.1)', () => {
     ).toBe(true);
   });
 
-  it('the therapist link shows the password form; its submit calls signInWithPassword(email, password)', async () => {
+  it('"change email" on the code form calls showClientSignIn(): the email form is back', async () => {
+    const auth = fakeAuth();
+    auth.requestCode.mockReturnValue(of(undefined));
+    renderPage(auth);
+    submit(screen.getByLabelText(strings.auth.emailLabel), 'anna@example.it');
+    await screen.findByLabelText(strings.auth.codeLabel);
+
+    fireEvent.click(screen.getByRole('button', { name: strings.auth.changeEmail }));
+
+    expect(await screen.findByLabelText(strings.auth.emailLabel)).toBeTruthy();
+  });
+
+  it('the therapist link shows the password form; its submit calls signInWithPassword(email, password) with the password untrimmed', async () => {
     const auth = fakeAuth();
     auth.signInWithPassword.mockReturnValue(of({ kind: 'totp_required' as const }));
     renderPage(auth);
@@ -109,12 +121,30 @@ describe('Sign-in page binding (architecture §7.1 templates, §10.1)', () => {
     fireEvent.change(screen.getByLabelText(strings.auth.emailLabel), {
       target: { value: 'terapista@fisio.test' },
     });
-    submit(password, 'password-of-twelve');
+    submit(password, ' password-of-twelve ');
 
     expect(auth.signInWithPassword).toHaveBeenCalledWith(
       'terapista@fisio.test',
-      'password-of-twelve',
+      ' password-of-twelve ',
     );
     expect(await screen.findByLabelText(strings.auth.totpLabel)).toBeTruthy();
+  });
+
+  it('"cancel" on the TOTP form calls showTherapistSignIn(); the client link on the password form calls showClientSignIn()', async () => {
+    const auth = fakeAuth();
+    auth.signInWithPassword.mockReturnValue(of({ kind: 'totp_required' as const }));
+    renderPage(auth);
+    fireEvent.click(screen.getByRole('button', { name: strings.auth.therapistLink }));
+    fireEvent.change(await screen.findByLabelText(strings.auth.emailLabel), {
+      target: { value: 'terapista@fisio.test' },
+    });
+    submit(screen.getByLabelText(strings.auth.passwordLabel), 'password-of-twelve');
+    await screen.findByLabelText(strings.auth.totpLabel);
+
+    fireEvent.click(screen.getByRole('button', { name: strings.common.cancel }));
+    expect(await screen.findByLabelText(strings.auth.passwordLabel)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: strings.auth.clientLink }));
+    expect(await screen.findByRole('button', { name: strings.auth.requestCode })).toBeTruthy();
   });
 });

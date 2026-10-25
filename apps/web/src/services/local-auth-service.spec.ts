@@ -13,6 +13,7 @@ import { firstValueFrom } from 'rxjs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { AuthError } from './auth-service';
 import { LOCAL_TOKENS_KEY, LocalAuthService } from './local-auth-service';
+import { NetworkError } from './network-error';
 import { MemoryStorage } from './storage';
 
 /**
@@ -38,10 +39,10 @@ const fetch = inProcessFetch(app);
 let next = 0;
 const email = (name: string) => `${name}-${++next}@example.test`;
 const lastCode = (to: string) => otpCodeIn(channel.sentTo(to).at(-1));
-const service = () => {
-  const storage = new MemoryStorage();
-  return { storage, auth: new LocalAuthService({ issuer: t.config.issuer, fetch, storage }) };
-};
+const service = (storage = new MemoryStorage(), fetchWith = fetch) => ({
+  storage,
+  auth: new LocalAuthService({ issuer: t.config.issuer, fetch: fetchWith, storage }),
+});
 const refused = (promise: Promise<unknown>) =>
   promise.then(
     () => 'resolved',
@@ -60,6 +61,15 @@ async function therapist() {
   const { secret } = await t.completeSetup(setupCode, PASSWORD);
   clock.advance({ seconds: 30 });
   return { ...user, secret };
+}
+
+/** A signed-in client with a usable refresh token in `storage`. */
+async function signedInClient() {
+  const anna = await client();
+  const { auth, storage } = service();
+  await firstValueFrom(auth.requestCode(anna.email));
+  const tokens = await firstValueFrom(auth.confirmCode(lastCode(anna.email)));
+  return { anna, auth, storage, tokens };
 }
 
 afterAll(async () => {
@@ -178,10 +188,7 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
   });
 
   it('refresh() rotates the tokens on the device; after signOut() there is nothing to refresh', async () => {
-    const anna = await client();
-    const { auth } = service();
-    await firstValueFrom(auth.requestCode(anna.email));
-    const first = await firstValueFrom(auth.confirmCode(lastCode(anna.email)));
+    const { auth, tokens: first } = await signedInClient();
     clock.advance({ minutes: 1 });
 
     const refreshed = await firstValueFrom(auth.refresh());
@@ -194,29 +201,132 @@ describe('LocalAuthService: the SPA sign-in flows against the auth emulator (arc
   });
 
   it('refresh() after a global sign-out is refused and the device forgets the tokens', async () => {
-    const anna = await client();
-    const { auth } = service();
-    await firstValueFrom(auth.requestCode(anna.email));
-    await firstValueFrom(auth.confirmCode(lastCode(anna.email)));
+    const { anna, auth } = await signedInClient();
     await t.identity.globalSignOut(anna.userId);
 
     await expect(refused(firstValueFrom(auth.refresh()))).resolves.toBe('not_authorized');
     await expect(firstValueFrom(auth.restore())).resolves.toBeNull();
   });
 
-  it('an answer outside the sign-in codes is unexpected, not an AuthError', async () => {
-    const broken: typeof globalThis.fetch = async () =>
-      new Response(JSON.stringify({ code: 'internal_error' }), {
-        status: 500,
-        headers: { 'content-type': 'application/json' },
-      });
-    const auth = new LocalAuthService({
-      issuer: t.config.issuer,
-      fetch: broken,
-      storage: new MemoryStorage(),
+  it('a refresh unsubscribed mid-flight still keeps the rotated tokens (the old one is spent)', async () => {
+    const { auth, storage, tokens: first } = await signedInClient();
+    clock.advance({ minutes: 1 });
+
+    const subscription = auth.refresh().subscribe();
+    subscription.unsubscribe();
+    // The round trip is in-process: let it finish, then the storage must hold the new pair.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const kept = await firstValueFrom(auth.restore());
+    expect(kept?.accessToken).not.toBe(first.accessToken);
+    expect(storage.get(LOCAL_TOKENS_KEY)).toContain(kept?.accessToken);
+    await expect(firstValueFrom(auth.refresh())).resolves.toMatchObject({
+      accessToken: expect.any(String),
     });
+  });
+
+  it('a signOut() while a refresh is in flight wins: the device stays signed out', async () => {
+    const { auth, storage } = await signedInClient();
+    clock.advance({ minutes: 1 });
+
+    const pending = refused(firstValueFrom(auth.refresh()));
+    await firstValueFrom(auth.signOut());
+
+    await expect(pending).resolves.toBe('not_authorized');
+    expect(storage.get(LOCAL_TOKENS_KEY)).toBeNull();
+    await expect(firstValueFrom(auth.restore())).resolves.toBeNull();
+  });
+
+  it('two tabs refreshing at once (shared storage): both end up with the one rotated pair, nothing is lost', async () => {
+    const { auth: tabA, storage } = await signedInClient();
+    const tabB = new LocalAuthService({ issuer: t.config.issuer, fetch, storage });
+    clock.advance({ minutes: 1 });
+
+    const settled = await Promise.allSettled([
+      firstValueFrom(tabA.refresh()),
+      firstValueFrom(tabB.refresh()),
+    ]);
+
+    // The emulator spends the token once: one tab wins, the other may be refused (and its
+    // session ends until the page reloads), but the winner's pair survives in storage.
+    const winners = settled.filter((r) => r.status === 'fulfilled');
+    expect(winners.length).toBeGreaterThanOrEqual(1);
+    const kept = storage.get(LOCAL_TOKENS_KEY);
+    expect(kept).not.toBeNull();
+    for (const w of winners) expect(kept).toContain(w.value.accessToken);
+    // The surviving pair is live: a reload restores it and the next refresh works.
+    const reloaded = new LocalAuthService({ issuer: t.config.issuer, fetch, storage });
+    await expect(firstValueFrom(reloaded.restore())).resolves.not.toBeNull();
+    await expect(firstValueFrom(reloaded.refresh())).resolves.toMatchObject({
+      accessToken: expect.any(String),
+    });
+  });
+
+  it('setup link: five wrong first codes lock the enrolment; the session is gone afterwards', async () => {
+    const user = await t.identity.createUser({ email: email('bloccata'), role: 'therapist' });
+    const code = await t.identity.startPasswordSetup(user.userId);
+    const { auth } = service();
+    await firstValueFrom(auth.startSetup({ email: user.email, code, password: PASSWORD }));
+    for (let i = 0; i < 4; i++) {
+      await expect(refused(firstValueFrom(auth.verifyTotpSetup('000000')))).resolves.toBe(
+        'code_mismatch',
+      );
+    }
+    await expect(refused(firstValueFrom(auth.verifyTotpSetup('000000')))).resolves.toBe(
+      'too_many_attempts',
+    );
+    // The lockout ended the enrolment session: the secret on screen is dead from here on.
+    await expect(refused(firstValueFrom(auth.verifyTotpSetup('000000')))).resolves.toBe(
+      'invalid_session',
+    );
+  });
+
+  it.each([
+    'not json',
+    '{"accessToken":"a","idToken":"b"}',
+    '{}',
+    '"str"',
+    '{"accessToken":"","idToken":"b","refreshToken":"c"}',
+  ])(
+    'corrupt storage %j: restore() is nobody and refresh() is not_authorized without a request',
+    async (raw) => {
+      const calls: unknown[] = [];
+      const counting: typeof globalThis.fetch = async (...args) => {
+        calls.push(args);
+        return fetch(...args);
+      };
+      const storage = new MemoryStorage();
+      storage.set(LOCAL_TOKENS_KEY, raw);
+      const { auth } = service(storage, counting);
+      await expect(firstValueFrom(auth.restore())).resolves.toBeNull();
+      await expect(refused(firstValueFrom(auth.refresh()))).resolves.toBe('not_authorized');
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it('a request that never reaches the emulator is a NetworkError, not a refusal', async () => {
+    const offline: typeof globalThis.fetch = async () => {
+      throw new TypeError('Failed to fetch');
+    };
+    const { auth } = service(new MemoryStorage(), offline);
     const failure = await refused(firstValueFrom(auth.requestCode('x@example.test')));
-    expect(failure).toBeInstanceOf(Error);
-    expect(failure).not.toBeInstanceOf(AuthError);
+    expect(failure).toBeInstanceOf(NetworkError);
+  });
+
+  it('an answer outside the sign-in codes, or a 200 with an unexpected body, is unexpected (not an AuthError)', async () => {
+    const answer =
+      (status: number, body: unknown): typeof globalThis.fetch =>
+      async () =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        });
+    for (const broken of [answer(500, { code: 'internal_error' }), answer(200, { kind: 'nope' })]) {
+      const { auth } = service(new MemoryStorage(), broken);
+      const failure = await refused(firstValueFrom(auth.requestCode('x@example.test')));
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(AuthError);
+      expect(failure).not.toBeInstanceOf(NetworkError);
+    }
   });
 });

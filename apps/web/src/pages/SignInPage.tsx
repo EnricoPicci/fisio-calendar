@@ -1,4 +1,6 @@
 import type { Strings } from '@fisio/contracts';
+import type { ReactElement } from 'react';
+import { ALERT, BUTTON, FIELD, FORM, INPUT, LINK } from '../app/classes';
 import { useDeps, useViewModel } from '../app/deps';
 import { onSubmit } from '../app/forms';
 import { useObservable } from '../app/use-observable';
@@ -20,7 +22,7 @@ export function SignInPage() {
       <h1 className="text-2xl font-semibold">{strings.auth.title}</h1>
       <Form vm={vm} busy={busy} strings={strings} />
       {error ? (
-        <p role="alert" className="mt-4 text-red-700">
+        <p role="alert" className={ALERT}>
           {error}
         </p>
       ) : null}
@@ -34,19 +36,12 @@ interface FormProps {
   readonly strings: Strings;
 }
 
-const FORMS: Record<SignInStep, (props: FormProps) => React.ReactElement> = {
+const FORMS: Record<SignInStep, (props: FormProps) => ReactElement> = {
   email: EmailForm,
   code: CodeForm,
   password: PasswordForm,
   totp: TotpForm,
 };
-
-const FORM = 'mt-6 flex flex-col gap-4';
-const FIELD = 'flex flex-col gap-1';
-const INPUT = 'rounded-md border border-stone-300 px-3 py-3 text-lg';
-const BUTTON =
-  'rounded-md bg-teal-700 px-4 py-3 text-lg font-medium text-white disabled:opacity-50';
-const LINK = 'text-teal-800 underline';
 
 function EmailForm({ vm, busy, strings }: FormProps) {
   return (
@@ -93,7 +88,7 @@ function PasswordForm({ vm, busy, strings }: FormProps) {
   return (
     <form
       className={FORM}
-      onSubmit={onSubmit((f) => vm.signInWithPassword(f.get('email'), f.get('password')))}
+      onSubmit={onSubmit((f) => vm.signInWithPassword(f.get('email'), f.raw('password')))}
     >
       <label className={FIELD}>
         <span>{strings.auth.emailLabel}</span>

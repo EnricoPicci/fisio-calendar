@@ -1,15 +1,17 @@
 import { stringsIt as strings } from '@fisio/contracts';
-import { of, throwError } from 'rxjs';
+import { NEVER, of, throwError } from 'rxjs';
 import { TestScheduler } from 'rxjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type FakeAuthService, fakeAuth } from '../../test/support/fake-auth';
 import { fakeTokens } from '../../test/support/jwt';
 import { AuthError } from '../services/auth-service';
+import { NetworkError } from '../services/network-error';
 import type { SessionSink } from './SessionViewModel';
 import { SignInViewModel } from './SignInViewModel';
 
 const tokens = fakeTokens('client', 1_800_000_000);
 const EMAIL = 'anna@example.it';
+const offline = () => new NetworkError(new TypeError('Failed to fetch'));
 
 describe('C1 Client sign-in with a one-time code (architecture §3.3, §10.4)', () => {
   let scheduler: TestScheduler;
@@ -77,6 +79,30 @@ describe('C1 Client sign-in with a one-time code (architecture §3.3, §10.4)', 
     });
   });
 
+  it.each(['not_authorized', 'invalid_session', 'invalid_password'] as const)(
+    'any other refusal on the code step (%s) returns to email: the code can no longer be used',
+    (code) => {
+      scheduler.run(({ cold, expectObservable }) => {
+        atCodeStep();
+        auth.confirmCode.mockReturnValue(cold('--#', undefined, new AuthError(code)));
+        void vm.confirmCode('12345678');
+        expectObservable(vm.error$).toBe('n-e', { n: null, e: strings.auth.errors[code] });
+        expectObservable(vm.step$).toBe('c-e', { c: 'code', e: 'email' });
+      });
+      expect(session.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a network failure on the code step keeps the code form for a retry and reads as offline', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      atCodeStep();
+      auth.confirmCode.mockReturnValue(cold('-#', undefined, offline()));
+      void vm.confirmCode('12345678');
+      expectObservable(vm.step$).toBe('c', { c: 'code' });
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.common.offline });
+    });
+  });
+
   it('success: the tokens start the session, error$ stays null', () => {
     scheduler.run(({ cold, expectObservable }) => {
       atCodeStep();
@@ -90,10 +116,41 @@ describe('C1 Client sign-in with a one-time code (architecture §3.3, §10.4)', 
 
   it('a network failure reads as offline and the step does not move', () => {
     scheduler.run(({ cold, expectObservable }) => {
-      auth.requestCode.mockReturnValue(cold('-#', undefined, new TypeError('Failed to fetch')));
+      auth.requestCode.mockReturnValue(cold('-#', undefined, offline()));
       void vm.requestCode(EMAIL);
       expectObservable(vm.error$).toBe('ne', { n: null, e: strings.common.offline });
       expectObservable(vm.step$).toBe('e', { e: 'email' });
+    });
+  });
+
+  it('an unexpected failure (a programming error included) reads as the generic error, never as offline', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.requestCode.mockReturnValue(cold('-#', undefined, new TypeError('x is undefined')));
+      void vm.requestCode(EMAIL);
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.common.unexpectedError });
+    });
+  });
+
+  it('an effect that completes without a value is a failure, not a silent success', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.requestCode.mockReturnValue(cold('--|'));
+      void vm.requestCode(EMAIL);
+      expectObservable(vm.busy$).toBe('t-f', { t: true, f: false });
+      expectObservable(vm.error$).toBe('n-e', { n: null, e: strings.common.unexpectedError });
+      expectObservable(vm.step$).toBe('e', { e: 'email' });
+    });
+  });
+
+  it('a session that refuses the tokens does not lock the form', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      atCodeStep();
+      (session.start as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        throw new Error('session broken');
+      });
+      auth.confirmCode.mockReturnValue(cold('-t|', { t: tokens }));
+      void vm.confirmCode('12345678');
+      expectObservable(vm.busy$).toBe('tf', { t: true, f: false });
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.common.unexpectedError });
     });
   });
 
@@ -105,6 +162,15 @@ describe('C1 Client sign-in with a one-time code (architecture §3.3, §10.4)', 
       expectObservable(vm.busy$).toBe('t--f', { t: true, f: false });
     });
     expect(auth.requestCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('switching forms while a request is in flight is ignored, so the answer lands on its own form', () => {
+    scheduler.run(({ cold, expectObservable }) => {
+      auth.requestCode.mockReturnValue(cold('---a|', { a: undefined }));
+      void vm.requestCode(EMAIL);
+      scheduler.schedule(() => vm.showTherapistSignIn(), 1);
+      expectObservable(vm.step$).toBe('e--c', { e: 'email', c: 'code' });
+    });
   });
 
   it('a new attempt clears the previous error$', () => {
@@ -127,6 +193,18 @@ describe('C1 Client sign-in with a one-time code (architecture §3.3, §10.4)', 
     await expect(vm.requestCode(EMAIL)).resolves.toBeUndefined();
     auth.confirmCode.mockReturnValueOnce(throwError(() => new Error('x')));
     await expect(vm.confirmCode('1')).resolves.toBeUndefined();
+  });
+
+  it('dispose() while an attempt is in flight settles its promise', async () => {
+    auth.requestCode.mockReturnValue(NEVER);
+    const pending = vm.requestCode(EMAIL);
+    vm.dispose();
+    await expect(
+      Promise.race([
+        pending,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('hung')), 50)),
+      ]),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -189,12 +267,27 @@ describe('T1 Therapist sign-in with password and TOTP (architecture §3.3, §8.1
     expect(session.start).not.toHaveBeenCalled();
   });
 
-  it('a stale TOTP challenge sends the therapist back to the password step', () => {
+  it.each(['too_many_attempts', 'not_authorized', 'invalid_session', 'code_expired'] as const)(
+    'any other refusal on the TOTP step (%s) sends the therapist back to the password step',
+    (code) => {
+      scheduler.run(({ cold, expectObservable }) => {
+        atTotpStep();
+        auth.confirmTotp.mockReturnValue(cold('--#', undefined, new AuthError(code)));
+        void vm.confirmTotp('123456');
+        expectObservable(vm.error$).toBe('n-e', { n: null, e: strings.auth.errors[code] });
+        expectObservable(vm.step$).toBe('t-p', { t: 'totp', p: 'password' });
+      });
+      expect(session.start).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a network failure on the TOTP step keeps the TOTP form', () => {
     scheduler.run(({ cold, expectObservable }) => {
       atTotpStep();
-      auth.confirmTotp.mockReturnValue(cold('--#', undefined, new AuthError('invalid_session')));
+      auth.confirmTotp.mockReturnValue(cold('-#', undefined, offline()));
       void vm.confirmTotp('123456');
-      expectObservable(vm.step$).toBe('t-p', { t: 'totp', p: 'password' });
+      expectObservable(vm.step$).toBe('t', { t: 'totp' });
+      expectObservable(vm.error$).toBe('ne', { n: null, e: strings.common.offline });
     });
   });
 

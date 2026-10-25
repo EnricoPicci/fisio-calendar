@@ -9,7 +9,8 @@ import { messageFor } from './errors';
  * an effect runs (no double submit: a call made while busy is ignored), `error$` carries the
  * Italian text of the last failure and clears when the next attempt starts. The `Promise<void>`
  * an attempt returns is a convenience for templates and async specs; it resolves after the
- * effect has settled either way and never rejects.
+ * effect has settled either way, also when the view-model is disposed mid-flight, and never
+ * rejects.
  */
 export abstract class FormViewModel extends ViewModel {
   protected readonly busy = this.state(false);
@@ -24,38 +25,44 @@ export abstract class FormViewModel extends ViewModel {
   }
 
   /**
-   * Runs `effect$` (one value, then complete) with busy/error bookkeeping. `onValue` applies the
-   * result; `onRefused` lets a flow react to a sign-in code (for example going back a step).
+   * Runs the observable `effect()` returns (one value, then complete) with busy/error
+   * bookkeeping. `onValue` applies the result; a value-less completion and a throwing `onValue`
+   * both count as failures. `onRefused` lets a flow react to a sign-in code (going back a step)
+   * and may return the message to show instead of the code's default sentence.
    */
   protected attempt<T>(
     effect: () => Observable<T>,
     onValue: (value: T) => void,
-    onRefused?: (code: AuthErrorCode) => void,
+    onRefused?: (code: AuthErrorCode) => string | undefined,
   ): Promise<void> {
     if (this.busy.value) return Promise.resolve();
     this.busy.next(true);
     this.error.next(null);
     return new Promise<void>((resolve) => {
-      this.own(
-        effect()
-          .pipe(take(1))
-          .subscribe({
-            next: (value) => {
+      const fail = (error: unknown) => {
+        const override = error instanceof AuthError ? onRefused?.(error.code) : undefined;
+        this.error.next(override ?? messageFor(error, this.strings));
+        this.busy.next(false);
+      };
+      const subscription = effect()
+        .pipe(take(1))
+        .subscribe({
+          next: (value) => {
+            try {
               onValue(value);
               this.busy.next(false);
-            },
-            error: (error: unknown) => {
-              this.error.next(messageFor(error, this.strings));
-              if (error instanceof AuthError) onRefused?.(error.code);
-              this.busy.next(false);
-              resolve();
-            },
-            complete: () => {
-              if (this.busy.value) this.busy.next(false);
-              resolve();
-            },
-          }),
-      );
+            } catch (error) {
+              fail(error);
+            }
+          },
+          error: fail,
+          complete: () => {
+            if (this.busy.value) fail(new Error('The effect completed without a value'));
+          },
+        });
+      // Settles on complete, on error and on dispose() alike.
+      subscription.add(resolve);
+      this.own(subscription);
     });
   }
 }

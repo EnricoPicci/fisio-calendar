@@ -3,22 +3,23 @@ import {
   type AdminClient,
   AdminClientSchema,
   type ErrorCode,
-  isErrorCode,
   type MeResponse,
   MeResponseSchema,
   type Problem,
+  ProblemSchema,
 } from '@fisio/contracts';
 import createClient, { type Middleware } from 'openapi-fetch';
-import { from, map, type Observable, switchMap, take } from 'rxjs';
+import { from, map, type Observable, switchMap, take, throwError } from 'rxjs';
 import type { ZodType } from 'zod';
 import type { paths } from './api.generated';
+import { fetchOrNetworkError } from './network-error';
 
 /**
  * The `ApiClient` port (docs/architecture.md §7.1): one method per endpoint of §5.2, each
  * returning an Observable that performs the request when subscribed, emits the parsed response
- * once and completes, or errors with an {@link ApiError} carrying a catalogued `ErrorCode`.
- * View-models depend on this interface; specs give them a fake whose methods return `cold()`
- * marbles.
+ * once and completes, or errors with an {@link ApiError} carrying a catalogued `ErrorCode` (or a
+ * `NetworkError` when the request never reached the server). View-models depend on this
+ * interface; specs give them a fake whose methods return `cold()` marbles.
  */
 export interface ApiClient {
   /** `GET /me`: who the caller is, by role. */
@@ -62,9 +63,10 @@ export interface OpenApiClientOptions {
 /**
  * The real client: `openapi-fetch` typed from `docs/openapi.json` (`api.generated.ts`), wrapped
  * with `from()`. Every call first takes one token from `accessToken$` (which refreshes silently
- * when needed), then sends the request with the bearer and the body hash. Responses are parsed
- * with the shared Zod schemas, so a server that drifts from the contract fails here, not deep in
- * a view-model.
+ * when needed), then sends the request with the bearer and the body hash. Every endpoint here
+ * needs a caller, so with no token the call fails at once as `unauthenticated` instead of
+ * sending an anonymous request the API would refuse anyway. Responses are parsed with the shared
+ * Zod schemas, so a server that drifts from the contract fails here, not deep in a view-model.
  */
 export class OpenApiClient implements ApiClient {
   readonly #client;
@@ -74,7 +76,7 @@ export class OpenApiClient implements ApiClient {
     this.#accessToken$ = options.accessToken$;
     this.#client = createClient<paths>({
       baseUrl: options.baseUrl,
-      fetch: (request) => options.fetch(request),
+      fetch: (request) => fetchOrNetworkError(options.fetch, request),
     });
     this.#client.use(bodyHashMiddleware);
   }
@@ -96,7 +98,11 @@ export class OpenApiClient implements ApiClient {
   ): Observable<T> {
     return this.#accessToken$.pipe(
       take(1),
-      switchMap((token) => from(request(bearer(token)))),
+      switchMap((token) =>
+        token
+          ? from(request({ [AUTHORIZATION_HEADER]: `Bearer ${token}` }))
+          : throwError(() => new ApiError('unauthenticated', 401)),
+      ),
       map((result) => schema.parse(unwrap(result))),
     );
   }
@@ -108,27 +114,13 @@ interface RawResponse {
   readonly response: Response;
 }
 
-function bearer(token: string | null): Record<string, string> {
-  return token ? { [AUTHORIZATION_HEADER]: `Bearer ${token}` } : {};
-}
-
 /** The success body, or an {@link ApiError} from the problem+json body (or the status alone). */
 function unwrap(result: RawResponse): unknown {
   if (result.response.ok && result.error === undefined) return result.data;
   const status = result.response.status;
-  const problem = asProblem(result.error);
-  if (problem) return raise(new ApiError(problem.code, status, problem));
-  return raise(new ApiError('internal_error', status));
-}
-
-function asProblem(error: unknown): Problem | undefined {
-  if (!error || typeof error !== 'object') return undefined;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' && isErrorCode(code) ? (error as Problem) : undefined;
-}
-
-function raise(error: Error): never {
-  throw error;
+  const problem = ProblemSchema.safeParse(result.error);
+  if (problem.success) throw new ApiError(problem.data.code, status, problem.data);
+  throw new ApiError('internal_error', status);
 }
 
 const bodyHashMiddleware: Middleware = {

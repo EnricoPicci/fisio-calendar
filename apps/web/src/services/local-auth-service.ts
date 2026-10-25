@@ -1,5 +1,6 @@
 import { isAuthErrorCode } from '@fisio/contracts';
-import { catchError, defer, from, map, type Observable, of, switchMap, throwError } from 'rxjs';
+import { defer, from, map, type Observable, of, throwError } from 'rxjs';
+import { z } from 'zod';
 import {
   AuthError,
   type AuthService,
@@ -8,6 +9,7 @@ import {
   type SetupInput,
   type TotpEnrolment,
 } from './auth-service';
+import { fetchOrNetworkError } from './network-error';
 import type { Storage } from './storage';
 
 /**
@@ -18,8 +20,8 @@ import type { Storage } from './storage';
  * emulator's Hono app without a server.
  *
  * A refused step answers 400 `{ code }` with an `AuthErrorCode`, mapped to {@link AuthError}.
- * Any other failure (a code outside the list, a non-JSON body, a network error) is unexpected
- * and surfaces as a plain `Error`.
+ * A failed network round trip is a `NetworkError`. Any other failure (a code outside the list,
+ * a body that does not match the route's shape) is unexpected and surfaces as a plain `Error`.
  */
 export interface LocalAuthServiceOptions {
   /** The emulator's issuer URL, under which its routes live: `DEFAULT_EMULATOR_CONFIG.issuer`. */
@@ -32,24 +34,27 @@ export interface LocalAuthServiceOptions {
 export const LOCAL_AUTH_ISSUER = 'http://127.0.0.1:9100/local';
 export const LOCAL_TOKENS_KEY = 'fisio.local.tokens';
 
-interface EmulatorTokens {
-  readonly accessToken: string;
-  readonly idToken: string;
-  readonly refreshToken: string;
-  readonly expiresIn: number;
-}
+const EmulatorTokens = z.object({
+  accessToken: z.string().min(1),
+  idToken: z.string().min(1),
+  refreshToken: z.string().min(1),
+  expiresIn: z.number(),
+});
+type EmulatorTokens = z.infer<typeof EmulatorTokens>;
 
-type EmulatorStep =
-  | { readonly kind: 'challenge'; readonly challenge: string; readonly session: string }
-  | { readonly kind: 'signedIn'; readonly tokens: EmulatorTokens };
+const EmulatorStep = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('challenge'), challenge: z.string(), session: z.string().min(1) }),
+  z.object({ kind: z.literal('signedIn'), tokens: EmulatorTokens }),
+]);
 
-interface EmulatorEnrolment {
-  readonly session: string;
-  readonly secret: string;
-  readonly otpauthUri: string;
-}
+const EmulatorEnrolment = z.object({
+  session: z.string().min(1),
+  secret: z.string().min(1),
+  otpauthUri: z.string().min(1),
+});
 
-type StoredTokens = Pick<EmulatorTokens, 'accessToken' | 'idToken' | 'refreshToken'>;
+const StoredTokens = EmulatorTokens.omit({ expiresIn: true });
+type StoredTokens = z.infer<typeof StoredTokens>;
 
 export class LocalAuthService implements AuthService {
   readonly #issuer: string;
@@ -57,6 +62,8 @@ export class LocalAuthService implements AuthService {
   readonly #storage: Storage;
   /** The emulator session of the sign-in in progress, between its two steps. */
   #session: string | undefined;
+  /** Set by `signOut()`, cleared by the next pair kept: a refresh in flight must not undo it. */
+  #signedOut = false;
 
   constructor(options: LocalAuthServiceOptions) {
     this.#issuer = options.issuer.replace(/\/+$/, '');
@@ -65,7 +72,7 @@ export class LocalAuthService implements AuthService {
   }
 
   requestCode(email: string): Observable<void> {
-    return this.#post<EmulatorStep>('/email-otp', { email }).pipe(
+    return this.#post('/email-otp', { email }, EmulatorStep).pipe(
       map((step) => {
         this.#session = step.kind === 'challenge' ? step.session : undefined;
       }),
@@ -77,7 +84,7 @@ export class LocalAuthService implements AuthService {
   }
 
   signInWithPassword(email: string, password: string): Observable<PasswordSignInStep> {
-    return this.#post<EmulatorStep>('/password', { email, password }).pipe(
+    return this.#post('/password', { email, password }, EmulatorStep).pipe(
       map((step): PasswordSignInStep => {
         if (step.kind === 'signedIn') return { kind: 'signed_in', tokens: this.#keep(step.tokens) };
         this.#session = step.session;
@@ -92,7 +99,7 @@ export class LocalAuthService implements AuthService {
 
   startSetup(input: SetupInput): Observable<TotpEnrolment> {
     const { code, password } = input;
-    return this.#post<EmulatorEnrolment>('/setup', { code, password }).pipe(
+    return this.#post('/setup', { code, password }, EmulatorEnrolment).pipe(
       map((enrolment) => {
         this.#session = enrolment.session;
         return { secret: enrolment.secret, otpauthUri: enrolment.otpauthUri };
@@ -111,18 +118,18 @@ export class LocalAuthService implements AuthService {
     });
   }
 
+  /**
+   * The whole round trip runs inside one promise, so an unsubscribed caller cannot lose the
+   * rotated refresh token: the emulator spends the old one whatever happens to the answer.
+   * The storage is shared by every tab of the device: a tab that finds the stored refresh token
+   * already rotated by another one (the emulator refused the spent token, or the answer arrived
+   * second) adopts the stored pair instead of signing the device out.
+   */
   refresh(): Observable<AuthTokens> {
     return defer(() => {
       const stored = this.#stored();
       if (!stored) return throwError(() => new AuthError('not_authorized'));
-      return this.#post<EmulatorTokens>('/refresh', { refreshToken: stored.refreshToken }).pipe(
-        map((tokens) => this.#keep(tokens)),
-        catchError((error: unknown) => {
-          // The emulator spends a refresh token it refuses: nothing here can be reused.
-          if (error instanceof AuthError) this.#storage.remove(LOCAL_TOKENS_KEY);
-          return throwError(() => error);
-        }),
-      );
+      return from(this.#refreshWith(stored));
     });
   }
 
@@ -130,8 +137,35 @@ export class LocalAuthService implements AuthService {
     return defer(() => {
       this.#storage.remove(LOCAL_TOKENS_KEY);
       this.#session = undefined;
+      this.#signedOut = true;
       return of(undefined);
     });
+  }
+
+  async #refreshWith(stored: StoredTokens): Promise<AuthTokens> {
+    try {
+      const tokens = await this.#call(
+        '/refresh',
+        { refreshToken: stored.refreshToken },
+        EmulatorTokens,
+      );
+      // A sign-out meanwhile: the device must stay signed out.
+      if (this.#signedOut) throw new AuthError('not_authorized');
+      const now = this.#stored();
+      // Another tab rotated first: its pair is the live one, this answer is a dead end.
+      if (now && now.refreshToken !== stored.refreshToken) return pick(now);
+      return this.#keep(tokens);
+    } catch (error) {
+      if (error instanceof AuthError) {
+        const now = this.#stored();
+        // Another tab already rotated the pair this call was refused for: use it.
+        if (now && now.refreshToken !== stored.refreshToken) return pick(now);
+        // The emulator spends a refresh token it refuses: nothing here can be reused. Only the
+        // pair this call used is dropped; a pair another tab stores meanwhile stays.
+        if (now) this.#storage.remove(LOCAL_TOKENS_KEY);
+      }
+      throw error;
+    }
   }
 
   /** The second step of a flow: needs the session of the first, which it spends on success. */
@@ -139,7 +173,7 @@ export class LocalAuthService implements AuthService {
     return defer(() => {
       const session = this.#session;
       if (!session) return throwError(() => new AuthError('invalid_session'));
-      return this.#post<EmulatorTokens>(path, { session, code }).pipe(
+      return this.#post(path, { session, code }, EmulatorTokens).pipe(
         map((tokens) => {
           this.#session = undefined;
           return this.#keep(tokens);
@@ -155,45 +189,43 @@ export class LocalAuthService implements AuthService {
       refreshToken: tokens.refreshToken,
     };
     this.#storage.set(LOCAL_TOKENS_KEY, JSON.stringify(stored));
-    return { accessToken: tokens.accessToken, idToken: tokens.idToken };
+    this.#signedOut = false;
+    return pick(stored);
   }
 
   #stored(): StoredTokens | undefined {
     const raw = this.#storage.get(LOCAL_TOKENS_KEY);
     if (!raw) return undefined;
     try {
-      const parsed: unknown = JSON.parse(raw);
-      return isStoredTokens(parsed) ? parsed : undefined;
+      const parsed = StoredTokens.safeParse(JSON.parse(raw));
+      return parsed.success ? parsed.data : undefined;
     } catch {
       return undefined;
     }
   }
 
-  #post<T>(path: string, body: Record<string, string>): Observable<T> {
-    return defer(() =>
-      from(
-        this.#fetch(`${this.#issuer}${path}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        }),
-      ),
-    ).pipe(
-      switchMap(async (response) => {
-        const json: unknown = await response.json().catch(() => undefined);
-        if (response.ok) return json as T;
-        const code = (json as { code?: unknown } | undefined)?.code;
-        if (typeof code === 'string' && isAuthErrorCode(code)) throw new AuthError(code);
-        throw new Error(`The auth emulator answered ${response.status} ${String(code ?? '')}`);
-      }),
-    );
+  #post<T>(path: string, body: Record<string, string>, shape: z.ZodType<T>): Observable<T> {
+    return defer(() => from(this.#call(path, body, shape)));
+  }
+
+  async #call<T>(path: string, body: Record<string, string>, shape: z.ZodType<T>): Promise<T> {
+    const response = await fetchOrNetworkError(this.#fetch, `${this.#issuer}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json: unknown = await response.json().catch(() => undefined);
+    if (response.ok) {
+      const parsed = shape.safeParse(json);
+      if (parsed.success) return parsed.data;
+      throw new Error(`The auth emulator answered ${path} with an unexpected body`);
+    }
+    const code = (json as { code?: unknown } | undefined)?.code;
+    if (typeof code === 'string' && isAuthErrorCode(code)) throw new AuthError(code);
+    throw new Error(`The auth emulator answered ${response.status} ${String(code ?? '')}`);
   }
 }
 
-function isStoredTokens(value: unknown): value is StoredTokens {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return ['accessToken', 'idToken', 'refreshToken'].every(
-    (key) => typeof record[key] === 'string' && record[key] !== '',
-  );
+function pick(stored: StoredTokens): AuthTokens {
+  return { accessToken: stored.accessToken, idToken: stored.idToken };
 }

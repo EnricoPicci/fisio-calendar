@@ -30,7 +30,17 @@
                 "paths": {
                   "rxjs": "Templates contain no logic (CLAUDE.md convention 1): subscribe through useObservable and move the pipeline into a view-model.",
                   "react": {
-                    "importNames": ["useState", "useEffect", "useReducer", "useLayoutEffect"],
+                    "importNames": [
+                      "useState",
+                      "useEffect",
+                      "useReducer",
+                      "useLayoutEffect",
+                      "useRef",
+                      "useMemo",
+                      "useCallback",
+                      "useSyncExternalStore",
+                      "useContext"
+                    ],
                     "message": "Templates contain no logic (CLAUDE.md convention 1): state and effects live in a view-model; bind with useObservable and useViewModel."
                   }
                 }

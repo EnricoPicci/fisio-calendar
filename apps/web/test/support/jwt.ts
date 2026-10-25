@@ -3,8 +3,12 @@ import type { TokenClaims } from '../../src/services/jwt';
 
 /** An unsigned JWT with these claims: enough for the SPA, which never verifies tokens. */
 export function fakeJwt(claims: TokenClaims & Record<string, unknown>): string {
+  // base64url of the UTF-8 bytes, as a real token is encoded.
   const encode = (value: unknown) =>
-    btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(value))))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
   return `${encode({ alg: 'none', typ: 'JWT' })}.${encode(claims)}.`;
 }
 
