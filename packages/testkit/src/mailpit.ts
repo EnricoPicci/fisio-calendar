@@ -29,6 +29,20 @@ async function getJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * The ids of the messages to `address` received at or after `since`, newest first: the
+ * Playwright binding journeys read one-time codes this way (architecture §10.1).
+ */
+export async function mailpitMessageIdsTo(address: string, since: Date): Promise<string[]> {
+  const query = encodeURIComponent(`to:"${address}"`);
+  const { messages } = await getJson<{ messages: { ID: string; Created: string }[] }>(
+    `/search?query=${query}`,
+  );
+  return messages
+    .filter((message) => new Date(message.Created).getTime() >= since.getTime())
+    .map((message) => message.ID);
+}
+
 /** The message with this id, with its headers. */
 export async function mailpitMessage(id: string): Promise<MailpitMessage> {
   const path = `/message/${encodeURIComponent(id)}`;
