@@ -1,5 +1,6 @@
 # CI (docs/architecture.md §11.3). The `test` job runs exactly what a laptop runs: `pnpm test`,
-# the complete local suite, against the same Docker containers (DynamoDB Local, Mailpit).
+# the complete local suite (Vitest, then Playwright against `pnpm dev`), against the same Docker
+# containers (DynamoDB Local, Mailpit).
 # `deploy-dev` / `smoke-dev` (needs: test) and `deploy-prod` arrive with WP0.10.
 name: CI
 
@@ -41,7 +42,27 @@ jobs:
 
       - run: pnpm typecheck
 
+      # The Playwright binding journeys (part of `pnpm test`) need a browser.
+      - name: Install Chromium for Playwright
+        run: pnpm --filter @fisio/e2e exec playwright install --with-deps chromium
+
       - name: Start local containers (DynamoDB Local, Mailpit)
         run: pnpm local:up
 
       - run: pnpm test
+
+      # A binding journey that fails only in CI leaves its Playwright trace (retain-on-failure).
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-traces
+          path: e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # `pnpm test` renders docs/journeys.md from the headless journeys; the committed copy must
+      # be the one this code produces (`git status`, not `git diff`: an uncommitted or deleted
+      # copy fails too).
+      - name: docs/journeys.md is up to date
+        run: test -z "$(git status --porcelain -- docs/journeys.md)"

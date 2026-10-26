@@ -8,7 +8,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "node tools/scripts/test.mjs",
     "test:watch": "vitest",
     "test:cloud:auth": "node tools/scripts/not-yet.mjs test:cloud:auth WP0.10",
     "test:cloud:email": "node tools/scripts/not-yet.mjs test:cloud:email WP0.10",
