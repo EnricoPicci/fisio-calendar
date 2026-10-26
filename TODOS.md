@@ -67,19 +67,19 @@
 **Priority:** P2
 **Depends on:** the erasure work package.
 
-### A client's first sign-in turns `invited` into `enabled`
+## API
 
-**What:** Decide and implement when a client created by `POST /admin/clients` (status `invited`, WP0.6) becomes `enabled`: on the first successful email-OTP sign-in (a Cognito post-authentication trigger in the cloud, the same hook in the auth emulator), or on first `GET /me`. Add the error-code and spec rows to architecture §10.4.
+### Cognito settings the invitation acceptance relies on
 
-**Why:** WP0.6 creates the client as `invited` with an identity user and sends the invitation, but nothing moves the status on, and the client-status middleware treats `invited` and `enabled` differently. Journey J1 (WP0.8) needs the transition.
+**What:** When the Cognito pool and app client land (WP0.9) and the spike runs (WP0.10), add infra assertions that only an answered email code can produce a client access token: `AllowAdminCreateUserOnly`, app client auth flows limited to `ALLOW_USER_AUTH` (no SRP or password flows that could use a generated temporary password) and refresh, `role`/`tenantId` set by the pre-token-generation trigger from server-held data, and no app-client write access to custom attributes. Make later client edits and blocks (WP1.5) conditional `UpdateCommand`s, not a whole-item `put` read before the acceptance, which would put `invited` back and drop `lastSignInAt`.
 
-**Context:** Found while implementing WP0.6; out of its scope (CLAUDE.md: never widen a work package).
+**Why:** Since WP0.8 the authorize middleware turns `invited` into `enabled` on the first request with a valid access token naming the client (architecture §8.2). That is sound only while a token implies the email code was answered.
+
+**Context:** Raised by the WP0.8 review (security and adversarial passes); the emulator-based specs prove nothing about Cognito's settings.
 
 **Effort:** S
 **Priority:** P1
-**Depends on:** WP0.6; needed by WP0.8.
-
-## API
+**Depends on:** WP0.9, WP0.10, WP1.5.
 
 ### Slot ids through CloudFront and the SPA client
 
@@ -267,6 +267,18 @@
 **Effort:** S
 **Priority:** P2
 **Depends on:** The Cognito and auth-emulator work packages.
+
+### A malformed token `sub` or client item answers 500
+
+**What:** In `authorize()` (`apps/api/src/http/access.ts`), `safeParse` the client token's `sub` and answer `forbidden` when it is not a `ClientId`. Decide whether `ClientRepository.acceptInvitation` should log and map a client item that fails `ClientRecordSchema` after the update, rather than throwing.
+
+**Why:** A verified token whose `sub` is not a UUID now throws a ZodError, which surfaces as an untyped 500 instead of 401/403. Since WP0.8, an `invited` client item that fails the schema is accepted (written `enabled`) before the parse fails, so the first request is a 500 after a state change. No access is granted either way.
+
+**Context:** Adversarial findings of the WP0.8 `/ship` review; the owner deferred them (D6). The `sub` parse predates WP0.8. Related to "Email case and id format across Cognito and the auth emulator".
+
+**Effort:** XS
+**Priority:** P3
+**Depends on:** —
 
 ### Pin the therapist token to the stored therapist id
 
@@ -954,6 +966,135 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 
 ## Local stack and test harness
 
+### Template matcher for journey emails
+
+**What:** Add the `toMatchTemplate(template, params?)` matcher of architecture §10.5 to the testkit (on the `OutboundMessage` a journey reads from `j.emails`), backed by the template registry of `packages/contracts/src/templates.ts`, and use it in J3 and later journeys.
+
+**Why:** WP0.8's journeys tell the invitation and code emails apart by their notification key prefix; with confirmations, cancellations and reminders, journeys need to assert the template and its params without matching message text (CLAUDE.md convention 2).
+
+**Context:** Left out of WP0.8, whose journeys only see two kinds of email.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** WP1.3 (the confirmation template).
+
+### The binding journey signs in a seeded client on the shared local table
+
+**What:** Give the Playwright binding journeys clients of their own (created per run, or a dedicated seeded client nobody uses by hand), instead of `giulia.bianchi@fisio.test` from `pnpm seed`.
+
+**Why:** `pnpm dev` and the binding journeys share the `fisio-local` table and the emulator's lockout counter: five wrong codes typed by hand for that address within 15 minutes make `pnpm test` fail until the lockout ends.
+
+**Context:** WP0.8 chose the seeded client to keep the e2e package free of API and emulator imports. The same change can drop the cross-clock filter of `mailpitMessageIdsTo` (Mailpit's `Created` from the container's clock against the host's `since`; Docker Desktop's clock drifts after sleep): take the message ids before the request and poll for a new one.
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** nothing.
+
+### Journey traces with concurrent requests
+
+**What:** Make `tracedFetch` record a request at dispatch (its slot in the trace kept, the status filled in on completion), or order a step's effects deterministically, with a testkit spec of two concurrent requests of skewed latency.
+
+**Why:** Requests are traced when they complete, so once a journey step makes parallel requests (J1's week and upcoming bookings, WP1.3) their order in `docs/journeys.md` follows DynamoDB Local's timing and CI's freshness check fails intermittently.
+
+**Context:** WP0.8's journeys make one request per step, so the report is stable today (review finding).
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** before WP1.3's J1 extension.
+
+### `docs/journeys.md` completeness per journey, not per file
+
+**What:** Have `journey()` record each journey's id and title when it is registered, and make `journeys-report.spec.ts` require one result per declared journey instead of one per journey file.
+
+**Why:** A skipped journey (`describe.skip`, `it.skip`) or one that hangs past its timeout in a file whose other journeys report is dropped from `docs/journeys.md` while the run stays green; once the shorter file is committed, CI's freshness check accepts it.
+
+**Context:** Red-team finding of the WP0.8 `/ship` review. Each WP0.8 journey file holds one journey, so nothing is lost today.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** before a journey file holds two journeys (WP1.x).
+
+### Surface coverage counts calls the harness and the view-model make
+
+**What:** Count a member as exercised only when the spec or journey calls it: record at call depth 0 (a re-entrancy counter in the wrapper) and let the harness actors' helpers (`TherapistActor.signIn()`) suspend recording. Also record construction separately, instead of inferring `neverConstructed` from a class that declared no stream.
+
+**Why:** A public method called only by another method of the same view-model, or by an actor helper, passes the "every public member is exercised" gate without any spec targeting it; and a stream-less view-model whose methods are all called would be reported as never constructed.
+
+**Context:** Red-team and testing findings of the WP0.8 `/ship` review (`packages/testkit/src/journeys/surface.ts`). No WP0.8 view-model is stream-less, and J8-a also drives the methods the helper uses.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** —
+
+### One-time codes read before the code email is recorded
+
+**What:** Make `Emails.codeFor` wait for the `AUTH_OTP` message (a short poll, or a promise from the channel), and have `tracedChannel` record the email when `send` is called rather than when it resolves.
+
+**Why:** The emulator sends the code email fire-and-forget; the journeys rely on `FakeChannel` settling within fewer microtasks than the in-process HTTP response. A channel that awaits real I/O, or failure injection that delays it, makes `codeFor` throw and reorders the email line in `docs/journeys.md`, which CI's freshness check then fails.
+
+**Context:** Red-team finding of the WP0.8 `/ship` review (`apps/web/test/journeys/harness.ts`).
+
+**Effort:** S
+**Priority:** P3
+**Depends on:** —
+
+### `ObservableRecorder.next()` default timeout
+
+**What:** Raise the 2 s default of `next()` (for example to 10 s, under the journeys' 20 s), or derive it from the journey.
+
+**Why:** Journeys wait with the default on streams backed by in-process HTTP and DynamoDB Local; a loaded CI runner or a cold DynamoDB Local could exceed 2 s and fail a journey intermittently.
+
+**Context:** Testing finding of the WP0.8 `/ship` review; no flake observed so far.
+
+**Effort:** XS
+**Priority:** P3
+**Depends on:** —
+
+### Journey actors for multi-client journeys
+
+**What:** In `apps/web/test/journeys/harness.ts`:
+- Key `FisioJourney`'s actors by the full email, keeping the local part only as the trace label (with a suffix when two labels collide).
+- Match `TraceRecorder.openSubscriptions(actor)` on an exact actor field, not the `${actor}.` prefix.
+- Make `j.client(email)` after `actor.dispose()` either start a new device or throw.
+- Have `journey()` dispose the actors in its `finally` when the body throws, without masking the body's error.
+- Move the `FisioJourney` JSDoc from above `JOURNEY_NOW` to the class.
+
+**Why:**
+- `anna@a.it` and `anna@b.it` get the same actor, so the second signs in as the first.
+- A client `anna.x` has its open subscriptions counted under `anna`.
+- A disposed actor handed back is skipped by `finish()`.
+- A failing journey leaves its view-models and sessions undisposed, which matters once a view-model holds a timer.
+
+**Context:** Maintainability, testing and adversarial findings of the third WP0.8 `/ship` review pass; the owner deferred them (D5, D6). The WP0.8 journeys use one client each and never reuse a disposed actor.
+
+**Effort:** S
+**Priority:** P2
+**Depends on:** before the first journey with two clients (J3).
+
+### Journey files in subfolders
+
+**What:** Make `apps/web/test/surface/files.ts` scan `test/journeys` (and the view-model folders for `countedSpecFiles()`) recursively, and key the journey results by the path relative to the web package instead of `basename(testPath)`.
+
+**Why:** The web Vitest project runs `test/**/*.spec.ts`, so a journey in a subfolder runs but is invisible to the report-completeness check. Two journey files with the same basename overwrite each other's trace in `docs/journeys.md`.
+
+**Context:** Adversarial finding of the WP0.8 `/ship` review (`packages/testkit/src/journeys/journey.ts`, `apps/web/test/surface/files.ts`). All WP0.8 journeys sit directly under `test/journeys`.
+
+**Effort:** XS
+**Priority:** P3
+**Depends on:** —
+
+### Prune results folders left by interrupted runs
+
+**What:** Have `apps/web/test/support/global-setup.ts` remove `node_modules/.cache/fisio-test-results/<uuid>/` folders older than a day before it creates its own.
+
+**Why:** The teardown runs only on a clean exit; Ctrl-C or a crashed worker leaves the run's folder behind for good. Each run has its own folder, so only disk use grows.
+
+**Context:** Adversarial finding of the WP0.8 `/ship` review.
+
+**Effort:** XS
+**Priority:** P4
+**Depends on:** —
+
 ### Dependency direction between testkit and tools/local
 
 **What:** Move the DynamoDB Local helpers (`localDynamoClient`, `ensureTable`, `createTableInput`, `TableDefinitionMismatchError`) out of `tools/local` into a package under `packages/` (or into `@fisio/testkit`), and make `tools/local`'s `create-table` depend on it, not the reverse. Record in `packages/README.md` which way `tools/*` and `packages/*` may depend on each other.
@@ -1061,6 +1202,7 @@ Known gaps in the text gate, verified in the last review round and accepted for 
 
 ## Completed
 
+- **A client's first sign-in turns `invited` into `enabled`** (WP0.8): the authorize middleware accepts the invitation on the invited client's first request with a valid access token (conditional update, `lastSignInAt` set; a block written meanwhile wins); no Cognito trigger, so the emulator and Cognito behave alike. Specs in `apps/api/test/client-status.spec.ts`; J1 signs in through it.
 - **Fence notifier writes on the delivery attempt** (WP0.6): every notifier transition is a conditional update on `status` and `updatedAt`; spec for the late result after a sweep.
 - **Code delivery must not time the answer** (WP0.6): `startEmailOtp` reads the lockout for every email and fires the code email without awaiting it; spec in the emulator's sign-in specs.
 - **Slot ids in URL paths** (WP0.4): `SlotId.toPathSegment`; route params decode through Hono and `SlotIdSchema`; round-trip spec through the in-process fetch adapter. The CloudFront check and the SPA client remain ("Slot ids through CloudFront and the SPA client").

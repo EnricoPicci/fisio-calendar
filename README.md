@@ -28,6 +28,7 @@ Requires Node 24 (`.nvmrc`), pnpm via `corepack enable`, and Docker.
 
 ```sh
 pnpm install
+pnpm --filter @fisio/e2e exec playwright install chromium   # once: the browser of the binding journeys
 pnpm local:up    # Docker: DynamoDB Local (:8000) and Mailpit (UI :8025), then the local table (Node >= 22.18)
 pnpm test        # the complete local suite: the only definition of green (needs local:up)
 pnpm seed        # the therapist (prints password + TOTP secret) and a dozen clients
