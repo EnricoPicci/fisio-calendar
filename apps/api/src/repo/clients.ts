@@ -3,6 +3,7 @@ import {
   GetCommand,
   PutCommand,
   TransactWriteCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import type { ClientId } from '@fisio/contracts';
 import {
@@ -21,7 +22,8 @@ import type { TransactPut } from './notifications';
 
 /**
  * The client item (§6.2). `channels` and `emailStatus` default for items written before WP0.6;
- * consentAt and lastSignInAt arrive with WP1.5 and WP3.1.
+ * `lastSignInAt` is set when the first request accepts the invitation (WP0.8, updated on later
+ * sign-ins from WP1.5); consentAt arrives with WP3.1.
  */
 export const ClientRecordSchema = z.object({
   clientId: ClientIdSchema,
@@ -36,6 +38,7 @@ export const ClientRecordSchema = z.object({
     .default({ email: true, whatsapp: false }),
   emailStatus: z.enum(['ok', 'bounced', 'complained']).default('ok'),
   invitedAt: IsoDateTimeSchema.optional(),
+  lastSignInAt: IsoDateTimeSchema.optional(),
   createdAt: IsoDateTimeSchema,
 });
 export type ClientRecord = z.infer<typeof ClientRecordSchema>;
@@ -71,6 +74,41 @@ export class ClientRepository {
       }),
     );
     return Item ? ClientRecordSchema.parse(Item) : undefined;
+  }
+
+  /**
+   * Accepts the invitation (§3.1, `invited` → `enabled`) on the invited client's first request
+   * with a valid access token, which proves the email code was answered. Conditional on the
+   * status still being `invited`, so a block written meanwhile wins. Answers the item as it
+   * stands afterwards (also when a concurrent first request enabled it), or undefined when it
+   * is gone.
+   */
+  async acceptInvitation(
+    tenantId: TenantId,
+    clientId: ClientId,
+    now: Date,
+  ): Promise<ClientRecord | undefined> {
+    try {
+      const { Attributes } = await this.doc.send(
+        new UpdateCommand({
+          TableName: this.table,
+          Key: { PK: tenantPk(tenantId), SK: clientSk(clientId) },
+          UpdateExpression: 'SET #status = :enabled, lastSignInAt = :now',
+          ConditionExpression: '#status = :invited',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':enabled': 'enabled',
+            ':invited': 'invited',
+            ':now': now.toISOString(),
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return ClientRecordSchema.parse(Attributes);
+    } catch (error) {
+      if (!isErrorNamed(error, 'ConditionalCheckFailedException')) throw error;
+      return this.get(tenantId, clientId);
+    }
   }
 
   /** Writes the whole client item, whether or not it exists (the seed, specs, later edits). */

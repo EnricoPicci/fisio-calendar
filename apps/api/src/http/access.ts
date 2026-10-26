@@ -1,4 +1,5 @@
 import { ClientIdSchema, type ErrorCode, type TenantId } from '@fisio/contracts';
+import type { Clock } from '@fisio/domain';
 import { createRoute, type RouteConfig } from '@hono/zod-openapi';
 import type { Context, MiddlewareHandler } from 'hono';
 import { InvalidTokenError, type TokenVerifier } from '../identity/token-verifier';
@@ -43,6 +44,8 @@ export interface AuthDeps {
   readonly tokens: TokenVerifier;
   readonly clients: ClientRepository;
   readonly settings: SettingsRepository;
+  /** When an invited client's first request accepted the invitation (`lastSignInAt`). */
+  readonly clock: Clock;
 }
 
 const BEARER = /^Bearer ([A-Za-z0-9._~+/-]+=*)$/;
@@ -51,8 +54,9 @@ const BEARER = /^Bearer ([A-Za-z0-9._~+/-]+=*)$/;
  * The checks of §8.2, in order: a bearer token (else 401), a valid access token (else 401), the
  * role the route needs (else 403), then the caller's current state, read strongly consistent on
  * every request (else 403): a client item with status `enabled`, or for the therapist the
- * tenant's Settings item. So a block, an erasure or a pending invitation takes effect on the
- * next request, not at token expiry.
+ * tenant's Settings item. So a block or an erasure takes effect on the next request, not at
+ * token expiry. An `invited` client's first request accepts the invitation (`enabled`): a valid
+ * access token naming that client proves the email code was answered.
  */
 export function authorize(access: Access, deps: AuthDeps): MiddlewareHandler<ApiEnv> {
   return async (c, next) => {
@@ -68,7 +72,10 @@ export function authorize(access: Access, deps: AuthDeps): MiddlewareHandler<Api
 
     if (claims.role === 'client') {
       const clientId = ClientIdSchema.parse(claims.sub);
-      const client = await deps.clients.get(claims.tenantId, clientId);
+      let client = await deps.clients.get(claims.tenantId, clientId);
+      if (client?.status === 'invited') {
+        client = await deps.clients.acceptInvitation(claims.tenantId, clientId, deps.clock.now());
+      }
       if (client?.status !== 'enabled') throw new ApiError('forbidden');
       c.set('caller', { role: 'client', tenantId: claims.tenantId, clientId, client });
     } else {

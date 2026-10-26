@@ -46,13 +46,15 @@ describe.each([
     const routes = declaredRoutes(h);
     let clientToken: string;
     let therapistToken: string;
-    /** Client tokens the status check refuses: invited, blocked, and no client item. */
-    let refusedClientTokens: string[];
+    /** Client tokens in the other states: invited, blocked, and no client item. */
+    let otherClientTokens: string[];
+    let invited: Awaited<ReturnType<typeof h.seedClient>>;
     beforeAll(async () => {
       clientToken = (await h.seedClient('enabled')).token;
       therapistToken = (await h.seedTherapist()).token;
-      refusedClientTokens = [
-        (await h.seedClient('invited')).token,
+      invited = await h.seedClient('invited');
+      otherClientTokens = [
+        invited.token,
         (await h.seedClient('blocked')).token,
         h.token(crypto.randomUUID(), 'client'),
       ];
@@ -102,10 +104,24 @@ describe.each([
       }
     });
 
-    // Value: protects=a client token opens no therapist route, whatever the client's status; fails_when=a /admin route is declared member, or the role check moves after a status check that lets some status through; why_new=generated over all routes and client states; seam=none; no_claim=ownership checks
+    // Value: protects=a client token opens no therapist route, whatever the client's status, and an invited client's token there does not accept the invitation; fails_when=a /admin route is declared member, or the role check moves after the status check (which lets some status through or enables an invited client); why_new=generated over all routes and client states; seam=none; no_claim=ownership checks
     it('every therapist route (/admin/*) × any client token → 403 forbidden', async () => {
       for (const route of routes.filter((r) => r.access === 'therapist')) {
-        for (const token of [clientToken, ...refusedClientTokens]) {
+        for (const token of [clientToken, ...otherClientTokens]) {
+          const res = await h.call(route.method, requestPath(route.path), { token });
+          expect(res.status, label(route)).toBe(403);
+          expect(res.body.code, label(route)).toBe('forbidden');
+        }
+      }
+      // The role check comes first: an invited client's token on a therapist route accepts nothing.
+      expect((await h.clients.get(h.tenantId, invited.clientId))?.status).toBe('invited');
+    });
+
+    // Value: protects=the client-status check runs on every member route, not only GET /me; fails_when=one member route skips or reorders the status check, so a blocked or erased client gets in; why_new=member routes were only driven with admitted tokens; seam=none; no_claim=the routes' own behaviour
+    it('every member route × blocked or unknown client token → 403 forbidden', async () => {
+      const refused = otherClientTokens.filter((token) => token !== invited.token);
+      for (const route of routes.filter((r) => r.access === 'member')) {
+        for (const token of refused) {
           const res = await h.call(route.method, requestPath(route.path), { token });
           expect(res.status, label(route)).toBe(403);
           expect(res.body.code, label(route)).toBe('forbidden');
@@ -136,12 +152,18 @@ describe.each([
       for (const route of routes) {
         const callers =
           route.access === 'public'
-            ? [undefined, 'not.a.jwt', clientToken, therapistToken, ...refusedClientTokens]
+            ? [undefined, 'not.a.jwt', clientToken, therapistToken, ...otherClientTokens]
             : route.access === 'member'
               ? [clientToken, therapistToken]
               : [therapistToken];
         for (const token of callers) {
           const res = await h.call(route.method, requestPath(route.path), token ? { token } : {});
+          expect([401, 403], label(route)).not.toContain(res.status);
+        }
+        // Each member route admits an invited client too, accepting the invitation (§8.2).
+        if (route.access === 'member') {
+          const { token } = await h.seedClient('invited');
+          const res = await h.call(route.method, requestPath(route.path), { token });
           expect([401, 403], label(route)).not.toContain(res.status);
         }
       }
