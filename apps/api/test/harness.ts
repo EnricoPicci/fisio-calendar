@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { createTestEmulator } from '@fisio/auth-emulator/testing';
+import { createTestEmulator, type TestEmulator } from '@fisio/auth-emulator/testing';
 import { ClientIdSchema, type ClientStatus, type TenantId, TenantIdSchema } from '@fisio/contracts';
 import { FixedClock, InProcessAsyncInvoker } from '@fisio/domain';
 import {
@@ -16,6 +16,7 @@ import {
 import type { AuthDeps } from '../src/http/access';
 import { API_BASE_PATH, type AppOptions, createApp } from '../src/http/app';
 import { createTokenVerifier, type TokenVerifier } from '../src/identity/token-verifier';
+import { deliveryJobs, runTick, type TickReport } from '../src/jobs/tick';
 import { createNotifierHandler, Notifier } from '../src/notify/notifier';
 import { type ClientRecord, type ClientRecordInput, ClientRepository } from '../src/repo/clients';
 import { JobMarkerRepository } from '../src/repo/job-markers';
@@ -27,7 +28,9 @@ import { SettingsRepository } from '../src/repo/settings';
  * DynamoDB Local under a fresh tenant, at a fixed clock, with the real token verifier reading
  * the testkit issuer's JWKS from memory, the auth emulator's identity provider (a pool of its
  * own), `FakeChannel` for email and the real notifier behind an in-process `AsyncInvoker`:
- * `await h.invoker.settled()` waits for what an async invoke started.
+ * `await h.invoker.settled()` waits for what an async invoke started. The web app's headless
+ * journeys (WP0.8) build the same harness through `@fisio/api/testing`, with their own clock and
+ * channel, verifying the emulator's tokens (`emulatorTokens`).
  */
 export const SPEC_NOW = '2027-03-01T08:00:00.000Z';
 export const SPEC_WEB_ORIGIN = 'https://fisio.test';
@@ -50,12 +53,42 @@ export interface CallResult {
 
 export interface HarnessOptions extends AppOptions {
   readonly issuer?: TestTokenIssuer;
-  /** Replaces the testkit issuer's verifier, e.g. with one for the auth emulator's tokens. */
-  readonly tokens?: (context: { clock: FixedClock; tenantId: TenantId }) => TokenVerifier;
+  /** Replaces the testkit issuer's verifier, e.g. with {@link emulatorTokens}. */
+  readonly tokens?: (context: {
+    clock: FixedClock;
+    tenantId: TenantId;
+    emulator: TestEmulator;
+  }) => TokenVerifier;
+  /** The clock of the API, the notifier and the emulator; a new one at {@link SPEC_NOW} by default. */
+  readonly clock?: FixedClock;
+  /** Where every email goes, the emulator's codes included; a new `FakeChannel` by default. */
+  readonly channel?: FakeChannel;
+}
+
+/** A verifier for the tokens of the harness's own auth emulator, its JWKS served from memory. */
+export function emulatorTokens(context: {
+  clock: FixedClock;
+  emulator: TestEmulator;
+}): TokenVerifier {
+  const { config, signer } = context.emulator;
+  return createTokenVerifier(
+    {
+      issuer: config.issuer,
+      jwksUri: `${config.issuer}/.well-known/jwks.json`,
+      clientId: config.clientId,
+    },
+    {
+      clock: context.clock,
+      fetcher: {
+        fetch: async () =>
+          new TextEncoder().encode(JSON.stringify(signer.jwks)).buffer as ArrayBuffer,
+      },
+    },
+  );
 }
 
 export function apiHarness(options: HarnessOptions = {}) {
-  const clock = new FixedClock(SPEC_NOW);
+  const clock = options.clock ?? new FixedClock(SPEC_NOW);
   const issuer = options.issuer ?? new TestTokenIssuer();
   const doc = testDocumentClient();
   const tenantId: TenantId = TenantIdSchema.parse(freshTenant());
@@ -63,9 +96,9 @@ export function apiHarness(options: HarnessOptions = {}) {
   const settings = new SettingsRepository(doc, TEST_TABLE);
   const notifications = new NotificationRepository(doc, TEST_TABLE);
   const markers = new JobMarkerRepository(doc, TEST_TABLE);
-  const channel = new FakeChannel();
+  const channel = options.channel ?? new FakeChannel();
   const loggedErrors: unknown[] = [];
-  /** The notifier's structured log lines, `[event, details]`. */
+  /** The notifier's and the tick's structured log lines, `[event, details]`. */
   const notifierLog: [string, Readonly<Record<string, unknown>>][] = [];
   const notifier = new Notifier({
     notifications,
@@ -78,16 +111,18 @@ export function apiHarness(options: HarnessOptions = {}) {
       notifierLog.push([event, details]),
     ),
   });
-  const { identity } = createTestEmulator({
+  const emulator = createTestEmulator({
     doc,
     table: TEST_TABLE,
     clock,
     channel,
     config: { poolId: freshTenant(), tenantId },
   });
+  const { identity } = emulator;
   const auth: AuthDeps = {
+    clock,
     tokens:
-      options.tokens?.({ clock, tenantId }) ??
+      options.tokens?.({ clock, tenantId, emulator }) ??
       createTokenVerifier(
         { issuer: TEST_ISSUER, jwksUri: TEST_JWKS_URI, clientId: TEST_CLIENT_ID },
         { clock, fetcher: issuer.fetcher },
@@ -98,7 +133,6 @@ export function apiHarness(options: HarnessOptions = {}) {
   const { app, api } = createApp(
     {
       ...auth,
-      clock,
       log: (error) => loggedErrors.push(error),
       identity,
       notifications,
@@ -151,6 +185,17 @@ export function apiHarness(options: HarnessOptions = {}) {
     return { ...stored, token: token(clientId, 'client') };
   }
 
+  /** One tick of the delivery jobs at the clock's instant (§5.3), waiting for the notifier. */
+  async function tick(): Promise<TickReport> {
+    const report = await runTick(
+      deliveryJobs(invoker),
+      { tenantId, now: clock.now() },
+      (event, details) => notifierLog.push([event, details]),
+    );
+    await invoker.settled();
+    return report;
+  }
+
   async function seedTherapist(): Promise<{ therapistId: string; token: string }> {
     await settings.create(tenantId, clock.now());
     const therapistId = randomUUID();
@@ -172,11 +217,14 @@ export function apiHarness(options: HarnessOptions = {}) {
     notifierLog,
     invoker,
     identity,
+    emulator,
+    fetch,
     loggedErrors,
     call,
     token,
     seedClient,
     seedTherapist,
+    tick,
   };
 }
 

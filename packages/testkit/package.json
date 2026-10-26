@@ -12,10 +12,13 @@
     "@aws-sdk/lib-dynamodb": "3.1146.0",
     "@fisio/domain": "workspace:*",
     "@fisio/infra": "workspace:*",
-    "@fisio/local": "workspace:*"
+    "@fisio/local": "workspace:*",
+    "rxjs": "^7.8.2",
+    "vitest": "^5.0.5"
   },
   "exports": {
     ".": "./src/index.ts",
-    "./global-setup": "./src/global-setup.ts"
+    "./global-setup": "./src/global-setup.ts",
+    "./mailpit": "./src/mailpit.ts"
   }
 }

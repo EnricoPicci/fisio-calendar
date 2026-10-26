@@ -5,6 +5,12 @@
   "type": "module",
   "description": "Playwright binding journeys against the full local stack.",
   "scripts": {
+    "test": "playwright test",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@fisio/contracts": "workspace:*",
+    "@fisio/testkit": "workspace:*",
+    "@playwright/test": "^1.64.1"
   }
 }

@@ -89,7 +89,10 @@ export const TenantIdSchema = z
   .brand<'TenantId'>();
 export type TenantId = z.infer<typeof TenantIdSchema>;
 
-/** A client's lifecycle (§3.1): `invited` → `enabled` ⇄ `blocked`; only `enabled` may call the API. */
+/**
+ * A client's lifecycle (§3.1): `invited` → `enabled` ⇄ `blocked`. Only `enabled` may call the
+ * API; an `invited` client's first authorized request accepts the invitation (§8.2).
+ */
 export const CLIENT_STATUSES = ['invited', 'enabled', 'blocked'] as const;
 export const ClientStatusSchema = z.enum(CLIENT_STATUSES);
 export type ClientStatus = z.infer<typeof ClientStatusSchema>;

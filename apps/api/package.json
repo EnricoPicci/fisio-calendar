@@ -29,6 +29,7 @@
   "exports": {
     "./identity": "./src/identity/index.ts",
     "./repo/settings": "./src/repo/settings.ts",
-    "./repo/clients": "./src/repo/clients.ts"
+    "./repo/clients": "./src/repo/clients.ts",
+    "./testing": "./test/harness.ts"
   }
 }

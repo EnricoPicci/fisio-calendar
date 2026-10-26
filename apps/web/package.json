@@ -22,6 +22,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@fisio/api": "workspace:*",
     "@fisio/auth-emulator": "workspace:*",
     "@fisio/openapi-types": "workspace:*",
     "@fisio/testkit": "workspace:*",
