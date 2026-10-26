@@ -20,6 +20,36 @@
   },
   "overrides": [
     {
+      "includes": ["apps/web/src/**", "!apps/web/src/**/*.spec.{ts,tsx}"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@fisio/api",
+                      "@fisio/api/**",
+                      "@fisio/testkit",
+                      "@fisio/testkit/**",
+                      "@fisio/auth-emulator",
+                      "@fisio/auth-emulator/**",
+                      "@fisio/local",
+                      "@fisio/local/**",
+                      "**/test/**"
+                    ],
+                    "message": "Server and test code never enter the SPA bundle: the SPA talks to the API over HTTP and uses only @fisio/contracts and @fisio/domain."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "includes": ["apps/web/src/pages/**", "!apps/web/src/pages/**/*.spec.{ts,tsx}"],
       "linter": {
         "rules": {
@@ -30,6 +60,22 @@
             "noRestrictedImports": {
               "level": "error",
               "options": {
+                "patterns": [
+                  {
+                    "group": [
+                      "@fisio/api",
+                      "@fisio/api/**",
+                      "@fisio/testkit",
+                      "@fisio/testkit/**",
+                      "@fisio/auth-emulator",
+                      "@fisio/auth-emulator/**",
+                      "@fisio/local",
+                      "@fisio/local/**",
+                      "**/test/**"
+                    ],
+                    "message": "Server and test code never enter the SPA bundle: the SPA talks to the API over HTTP and uses only @fisio/contracts and @fisio/domain."
+                  }
+                ],
                 "paths": {
                   "rxjs": "Templates contain no logic (CLAUDE.md convention 1): subscribe through useObservable and move the pipeline into a view-model.",
                   "react": {

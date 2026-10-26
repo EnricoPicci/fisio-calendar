@@ -12,7 +12,11 @@ src/viewmodels/  SessionViewModel, SignInViewModel, SetupViewModel, HomeViewMode
 src/services/    ApiClient port + OpenApiClient (openapi-fetch, typed from api.generated.ts),
                  AuthService port + LocalAuthService (emulator) + AmplifyAuthService (Cognito),
                  Storage port, JWT claims
-test/support/    fakes for specs (AuthService, ApiClient, JWTs); test/journeys arrives in WP0.8
+test/support/    fakes for specs (AuthService, ApiClient, JWTs); the surface instrumentation
+                 (setup file), the results directory and its global setup
+test/journeys/   headless journeys J<n>-<slug>.journey.spec.ts and their harness (FisioJourney)
+test/surface/    the checks over a whole run (project web-surface): surface coverage, the
+                 rendering of docs/journeys.md
 ```
 
 ## Rules the code follows
@@ -53,6 +57,47 @@ test/support/    fakes for specs (AuthService, ApiClient, JWTs); test/journeys a
 emulator's Hono app in-process (DynamoDB Local, codes read from `FakeChannel`), the generated
 types' freshness, and the template bindings and the shell (`src/pages/*.spec.tsx`,
 `src/app/*.spec.tsx`; `// @vitest-environment jsdom`, Testing Library).
+
+### Headless journeys (architecture §10.5)
+
+`test/journeys/J<n>-<slug>.journey.spec.ts`, one per flow of the catalogue (§10.4 group H). A
+journey drives the real view-models, built as the pages build them, against the real API and the
+auth emulator in-process (`test/journeys/harness.ts`):
+
+```ts
+journey('J1 — invitation, one-time code, first view of the calendar', async (j) => {
+  await j.invite('Anna Verdi', 'anna@example.it');         // a `given` step: one trace line
+  const anna = j.client('anna@example.it');                 // a device: storage, session, API client
+  const signIn = anna.open(SignInViewModel);                // as SignInPage builds it, traced
+  const [step, busy] = j.record(signIn.step$, signIn.busy$); // subscribe as the template would
+  await signIn.requestCode('anna@example.it');
+  await signIn.confirmCode(j.emails.codeFor('anna@example.it', j)); // redacted in the trace
+  expect(busy.values).toEqual([false, true, false, true, false]);
+  expect(j.trace.apiCalls()).toEqual(['POST /api/v1/admin/clients']);
+  await anna.dispose();                                     // fails if a subscription stays open
+});
+```
+
+- **Actors:** `j.client(email)`, `j.therapist()`; `actor.signIn()` / `signIn$()` run the
+  sign-in page's flow; `actor.open(Class)` builds a page's view-model (add new pages to `PAGES`
+  in the harness); `actor.dispose()` / `dispose$()`.
+- **Setup:** `j.invite(name, email)` (through `POST /admin/clients`), `j.seedClient(...)`,
+  `j.therapistAccount()`, any `j.given(text, body)`. **Time:** `j.advance(...)`,
+  `j.advanceTo(...)` / `advanceTo$`, `j.tick()`. **Assertions:** `j.record`, `j.recorded`,
+  `j.trace` (`apiCalls()`, `calls()`, `openSubscriptions()`), `j.emails`, `j.assert` (pipelines).
+- Each journey gets a fresh tenant, channel and clock; after the body every actor is disposed and
+  an open subscription fails the journey. Its rendered trace goes to `docs/journeys.md`.
+
+### Surface coverage and the journey report
+
+A setup file (`test/support/surface-setup.ts`) wraps the methods of every class in
+`src/viewmodels` and the base's `stream()`, so each spec file logs which members it called or
+subscribed to. The `web-surface` project (`vitest.surface.config.ts`) runs after every other
+project and fails when a public method or stream of a view-model is exercised by no view-model
+spec or journey (`test/surface/allowlist.ts`, kept empty), then renders `docs/journeys.md` from
+the journeys' traces. Both need the whole web project in the run (`pnpm test`); a filtered run
+of the web project fails them with that hint. CI fails when the committed `docs/journeys.md`
+differs from the rendered one: commit it with the change that altered a flow.
 
 ## Pages (M0)
 

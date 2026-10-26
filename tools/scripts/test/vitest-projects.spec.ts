@@ -44,7 +44,7 @@ async function projectSpecFiles(): Promise<Set<string>> {
 }
 
 describe('Vitest projects: every spec file runs in `pnpm test`', () => {
-  // Value: protects=a spec file is never silently left out of the suite; fails_when=a spec sits outside every project's include, or a project's exclude drops it; why_new=the suite only proved that the globs start; seam=none; no_claim=that the project's specs pass; the exclude and root e2e/ branches can fail only once a project sets an exclude or Playwright specs exist
+  // Value: protects=a spec file is never silently left out of the suite; fails_when=a spec sits outside every project's include, or a project's exclude drops it; why_new=the suite only proved that the globs start; seam=none; no_claim=that the project's specs pass
   it('each *.spec.ts(x) in the repository belongs to a Vitest project listed in the root config', async () => {
     const inProjects = await projectSpecFiles();
     const all = globSync('**/*.spec.{ts,tsx}', {
@@ -73,11 +73,19 @@ describe('Vitest projects: every spec file runs in `pnpm test`', () => {
     for (const config of configs) {
       const { default: project } = (await import(join(root, config))) as Config;
       const dir = join(root, dirname(config));
-      const specs = globSync(['**/*.spec.{ts,tsx}', 'test/**/*.ts'], {
-        cwd: dir,
-        exclude: (p) => p.split('/').some((part) => skipped.has(part)),
-      });
-      const sources = specs.map((file) => join(dir, file)).filter((path) => path !== thisFile);
+      // The project's spec files and the helpers beside and below them (two projects may share
+      // a folder, so not the whole package).
+      const exclude = [...configDefaults.exclude, ...(project.test?.exclude ?? [])];
+      const specs = (project.test?.include ?? []).flatMap((pattern) =>
+        globSync(pattern, { cwd: dir, exclude }),
+      );
+      const folders = [...new Set(specs.map((file) => dirname(file)))];
+      const helpers = folders.flatMap((folder) =>
+        globSync(`${folder}/**/*.ts`, { cwd: dir, exclude }),
+      );
+      const sources = [...new Set([...specs, ...helpers])]
+        .map((file) => join(dir, file))
+        .filter((path) => path !== thisFile);
       if (!sources.some((path) => usesDynamo.test(readFileSync(path, 'utf8')))) continue;
       checked += 1;
       const setup = [project.test?.globalSetup ?? []].flat();

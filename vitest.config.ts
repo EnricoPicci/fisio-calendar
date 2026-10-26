@@ -10,6 +10,8 @@ export default defineConfig({
     projects: [
       'packages/*/vitest.config.ts',
       'apps/*/vitest.config.ts',
+      // Runs after every other project (groupOrder 1): surface coverage, docs/journeys.md.
+      'apps/web/vitest.surface.config.ts',
       'infra/vitest.config.ts',
       'tools/scripts/vitest.config.ts',
       'tools/local/*/vitest.config.ts',
