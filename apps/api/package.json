@@ -8,11 +8,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@aws-sdk/client-cognito-identity-provider": "3.1146.0",
-    "@aws-sdk/client-dynamodb": "3.1146.0",
-    "@aws-sdk/client-lambda": "3.1146.0",
-    "@aws-sdk/client-sesv2": "3.1146.0",
-    "@aws-sdk/lib-dynamodb": "3.1146.0",
+    "@aws-sdk/client-cognito-identity-provider": "3.1156.0",
+    "@aws-sdk/client-dynamodb": "3.1156.0",
+    "@aws-sdk/client-lambda": "3.1156.0",
+    "@aws-sdk/client-sesv2": "3.1156.0",
+    "@aws-sdk/lib-dynamodb": "3.1156.0",
     "@fisio/auth-emulator": "workspace:*",
     "@fisio/contracts": "workspace:*",
     "@fisio/domain": "workspace:*",
