@@ -8,8 +8,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "3.1146.0",
-    "@aws-sdk/lib-dynamodb": "3.1146.0",
+    "@aws-sdk/client-dynamodb": "3.1156.0",
+    "@aws-sdk/lib-dynamodb": "3.1156.0",
     "@fisio/contracts": "workspace:*",
     "@fisio/domain": "workspace:*",
     "@fisio/infra": "workspace:*",
