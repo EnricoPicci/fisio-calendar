@@ -26,7 +26,7 @@
     "smoke:dev": "node tools/scripts/not-yet.mjs smoke:dev WP0.10"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.2",
+    "@biomejs/biome": "2.6.4",
     "@types/node": "^22.20.5",
     "tsx": "^4.23.15",
     "typescript": "~7.0.2",
